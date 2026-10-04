@@ -44,7 +44,7 @@ const { OnlinePumpSdk } = require("@pump-fun/pump-sdk");
 const nacl = require("tweetnacl");
 import { LAUNCHED_STATUSES } from "../lib/graduate.mjs";
 import { openDb, listLaunches, getLaunch, registerLaunch, recordIntent } from "../lib/db.mjs";
-import { initVanity, issueForLaunch, issuedToIpSince, importIncoming, incomingDir, freshCount, RESERVATION_SECS } from "../lib/vanity.mjs";
+import { initVanity, issueForLaunch, issuedToIpSince, importIncoming, incomingDir, freshCount, RESERVATION_SECS, markLaunched } from "../lib/vanity.mjs";
 
 const URI_MAX = 120;
 
@@ -446,7 +446,12 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       const ip = clientIp(req);
       const retry = db.prepare("SELECT 1 FROM vanity WHERE state = 'issued' AND holder = ? AND issued_at > ?").get(creator.toBase58(), Math.floor(Date.now() / 1000) - RESERVATION_SECS);
       if (!retry && issuedToIpSince(db, ip, Math.floor(Date.now() / 1000) - 3600) >= launchesPerIpPerHour) throw status(429, "too many launches from here this hour");
-      const mintKp = issueForLaunch(db, creator.toBase58(), ip, vanityReserve);
+      let mintKp = issueForLaunch(db, creator.toBase58(), ip, vanityReserve);
+      // the creator's reserved address may already carry their previous launch: then it is spent, issue another
+      for (let i = 0; mintKp && i < 3 && (await conn.getAccountInfo(mintKp.publicKey, "confirmed")); i++) {
+        markLaunched(db, mintKp.publicKey.toBase58());
+        mintKp = issueForLaunch(db, creator.toBase58(), ip, vanityReserve);
+      }
       if (!mintKp) throw status(503, "the next hook address is being made: try again in a few minutes");
       // ⛔ a config's fee split is fixed for good: never launch on one that does not match what the site says
       const cfgNow = await configState(config);

@@ -57,3 +57,19 @@ test("importing reads real ground keypair files and deletes them; junk is left a
   assert.equal(importIncoming(db, dir), 0);
   assert.deepEqual(readdirSync(dir).sort(), ["notes.txt", "partialhook.json"]);
 });
+
+test("a reserved key whose token launched is retired, and the creator's next launch gets a NEW key", async () => {
+  const { openDb, registerLaunch } = await import("../lib/db.mjs");
+  const { initVanity, addKey, issueForLaunch, markLaunched } = await import("../lib/vanity.mjs");
+  const { Keypair } = await import("@solana/web3.js");
+  const db = openDb(":memory:"); initVanity(db);
+  // plain keys straight into the pool (addKey insists on the …hook suffix)
+  for (let i = 0; i < 8; i++) { const k = Keypair.generate(); db.prepare("INSERT INTO vanity (pubkey, secret, created_at) VALUES (?, ?, ?)").run(k.publicKey.toBase58(), Buffer.from(k.secretKey).toString("base64"), i); }
+  const first = issueForLaunch(db, "CREATOR", "ip", 0);
+  assert.equal(issueForLaunch(db, "CREATOR", "ip", 0).publicKey.toBase58(), first.publicKey.toBase58(), "a retry before launching gets the same key");
+  registerLaunch(db, { mint: first.publicKey.toBase58(), pool: "p", config: "c", creator: "CREATOR" });
+  const second = issueForLaunch(db, "CREATOR", "ip", 0);
+  assert.notEqual(second.publicKey.toBase58(), first.publicKey.toBase58(), "after it launched: a new key");
+  assert.equal(markLaunched(db, second.publicKey.toBase58()), 1);
+  assert.notEqual(issueForLaunch(db, "CREATOR", "ip", 0).publicKey.toBase58(), second.publicKey.toBase58());
+});

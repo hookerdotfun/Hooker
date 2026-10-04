@@ -1,5 +1,14 @@
 {
   "_doc": "Coins shown on hooker.fun that were NOT launched through Hooker (lib/featured.mjs). Pinned first in every list. image = a file in web/public. createdAt = unix seconds of the coin's create tx. hideLaunchesBefore: launches created before this unix time are left off the SITE only (the graduator still sees and finishes them).",
   "hideLaunchesBefore": 1791144400,
-  "coins": []
+  "coins": [
+    {
+      "mint": "9BMbyUfW6g4ptTGqyZeLdKRMz9tM4ssSgUEKYK94hook",
+      "creator": "fomosZ2wByGHXygzSzDg1J7uFVCiAj9KbZVjr342hnX",
+      "name": "Hooker",
+      "symbol": "HOOKER",
+      "image": "/hooker-token.png",
+      "createdAt": 1791154064
+    }
+  ]
 }
