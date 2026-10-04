@@ -1,0 +1,17 @@
+[package]
+name = "hooker-grind"
+version = "0.1.0"
+edition = "2021"
+
+# Standalone: not part of the Anchor workspace, built with the system toolchain.
+[workspace]
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+bs58 = "0.5"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

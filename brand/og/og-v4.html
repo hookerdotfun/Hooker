@@ -1,0 +1,12 @@
+<!doctype html><html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,600..900&display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;width:1200px;height:630px;background:#0b0c0e;overflow:hidden}
+.c{position:relative;width:1200px;height:630px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:0;padding-bottom:90px;box-sizing:border-box}
+/* the green glow rising from the bottom edge, as in the operator's design */
+.glow{position:absolute;left:50%;bottom:-290px;width:1600px;height:520px;transform:translateX(-50%);border-radius:50%;
+  background:radial-gradient(closest-side, rgba(120,225,150,1), rgba(92,194,122,.75) 40%, rgba(60,140,90,.25) 72%, rgba(11,12,14,0) 100%);filter:blur(28px)}
+.hook{width:150px;height:150px;object-fit:contain;position:relative;margin:0 0 -6px 40px;filter:drop-shadow(0 10px 24px rgba(0,0,0,.6))}
+h1{position:relative;margin:0;font-family:Archivo,sans-serif;font-weight:800;font-stretch:108%;font-size:178px;letter-spacing:-0.035em;line-height:1;
+  background:linear-gradient(90deg,#4fbf72 0%,#6fd690 45%,#a8ebc0 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+</style></head><body><div class="c"><div class="glow"></div><img class="hook" src="hook.png"><h1>Hooker</h1></div></body></html>

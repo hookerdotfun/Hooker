@@ -1,0 +1,14 @@
+# never commit keys, ledgers or settings
+keys/
+data/
+backups/
+*.env
+.env*
+*.pem
+# build output and local state
+node_modules/
+target/
+dist/
+test-ledger/
+*.log
+.DS_Store
