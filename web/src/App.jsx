@@ -37,7 +37,7 @@ function Nav({ className }) {
 }
 
 /** The connected wallet, top right: a pill that opens a small menu (address with copy, My tokens, Sign out). */
-function WalletMenu({ address, disconnect }) {
+function WalletMenu({ address, evmAddress, disconnect, connect }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const ref = useRef(null);
@@ -48,16 +48,20 @@ function WalletMenu({ address, disconnect }) {
     document.addEventListener("pointerdown", away); window.addEventListener("keydown", esc);
     return () => { document.removeEventListener("pointerdown", away); window.removeEventListener("keydown", esc); };
   }, [open]);
-  const copy = async () => { try { await navigator.clipboard.writeText(address); setCopied(true); setTimeout(() => setCopied(false), 1200); } catch {} };
+  const copy = async (a) => { try { await navigator.clipboard.writeText(a); setCopied(a); setTimeout(() => setCopied(false), 1200); } catch {} };
+  const main = address ?? evmAddress;
   return (
     <div className="wmenu" ref={ref}>
       <button type="button" className={`wallet-pill ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <span className="dot on" />{short(address)}
+        <span className="dot on" />{short(main)}
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="chev"><path d="m6 9 6 6 6-6" /></svg>
       </button>
       {open && (
         <div className="wmenu-pop" role="menu">
-          <button type="button" className="wmenu-addr" onClick={copy}><span className="mono">{short(address)}</span><span className="wmenu-copy">{copied ? "Copied" : "Copy"}</span></button>
+          {address && <button type="button" className="wmenu-addr" onClick={() => copy(address)}><span className="wmenu-chain">Solana</span><span className="mono">{short(address)}</span><span className="wmenu-copy">{copied === address ? "Copied" : "Copy"}</span></button>}
+          {evmAddress && <button type="button" className="wmenu-addr" onClick={() => copy(evmAddress)}><span className="wmenu-chain">Robinhood</span><span className="mono">{short(evmAddress)}</span><span className="wmenu-copy">{copied === evmAddress ? "Copied" : "Copy"}</span></button>}
+          {!address && <button type="button" className="wmenu-item" onClick={() => { setOpen(false); connect("sol").catch(() => {}); }}>Add a Solana wallet</button>}
+          {!evmAddress && <button type="button" className="wmenu-item" onClick={() => { setOpen(false); connect("evm").catch(() => {}); }}>Add an EVM wallet</button>}
           <Link to="/me" className="wmenu-item" onClick={() => setOpen(false)}>My tokens</Link>
           <button type="button" className="wmenu-item out" onClick={() => { setOpen(false); disconnect(); }}>Sign out</button>
         </div>
@@ -67,7 +71,7 @@ function WalletMenu({ address, disconnect }) {
 }
 
 export default function App() {
-  const { address, connect, disconnect } = useWallet();
+  const { address, evmAddress, connect, disconnect } = useWallet();
   const { pathname } = useLocation();
   useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
   return (
@@ -79,9 +83,9 @@ export default function App() {
           <Nav />
           <div className="top-right">
             <a className="xbtn" href={X_URL} target="_blank" rel="noreferrer" aria-label="Hooker on X"><XIcon /></a>
-            {address
-              ? <WalletMenu address={address} disconnect={disconnect} />
-              : <button className="btn small" onClick={() => { connect().catch(() => {}); }}>Connect</button>}
+            {address || evmAddress
+              ? <WalletMenu address={address} evmAddress={evmAddress} disconnect={disconnect} connect={connect} />
+              : <button className="btn small" onClick={() => { connect("any").catch(() => {}); }}>Connect</button>}
           </div>
         </header>
         <Nav className="mobile-nav" />
@@ -103,7 +107,7 @@ export default function App() {
         <div className="pfoot">
           <div className="pfoot-brand">
             <Brand label />
-            <p>Rules are built into the token through Solana Token-2022 transfer hooks. Every launch graduates into a normal Pumpfun token.</p>
+            <p>Rules are built into the token itself, through Solana Token-2022 transfer hooks and on Robinhood Chain. Every launch graduates into a normal Pumpfun or Pons token.</p>
           </div>
           <div className="pfoot-col">
             <h4>Site</h4>
@@ -117,6 +121,7 @@ export default function App() {
             <a href="https://solscan.io/account/GE5TW1AFehhNFLYiSiaAkmbTjnHTB3hdhw6ZZFBP5sLV" target="_blank" rel="noreferrer">Program</a>
             <a href="https://pump.fun" target="_blank" rel="noreferrer">Pumpfun</a>
             <a href="https://www.meteora.ag" target="_blank" rel="noreferrer">Meteora</a>
+            <a href="https://www.ponsfamily.com" target="_blank" rel="noreferrer">Pons</a>
           </div>
           <div className="pfoot-col">
             <h4>Elsewhere</h4>

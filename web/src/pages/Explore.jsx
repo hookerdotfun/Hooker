@@ -6,7 +6,7 @@ import TokenCard from "../components/TokenCard.jsx";
 const SORTS = {
   newest: { label: "Newest", fn: (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) },
   cap: { label: "Market cap", fn: (a, b) => (b.marketCapUsd ?? -1) - (a.marketCapUsd ?? -1) },
-  progress: { label: "Closest to Pumpfun", fn: (a, b) => (b.progress ?? 0) - (a.progress ?? 0) },
+  progress: { label: "Closest to graduation", fn: (a, b) => (b.progress ?? 0) - (a.progress ?? 0) },
 };
 
 /** One list: a title with its count, a line under it, sort pills on the right, then the cards. */
@@ -63,7 +63,7 @@ export default function Explore() {
       <div className="chead page">
         <div className="eyebrow">Explore</div>
         <h1><span className="grad">Dashboard</span></h1>
-        <p className="chead-sub">Launch with any combination of hooks and graduate into a normal Pumpfun token.</p>
+        <p className="chead-sub">Launch with any combination of hooks and graduate into a normal Pumpfun or Pons token.</p>
         <label className="search wide">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, ticker or address" />
@@ -71,11 +71,11 @@ export default function Explore() {
       </div>
       {err && !data && <p className="err center">{err}</p>}
 
-      <Section title="Graduated" blurb="Tokens that graduated to Pumpfun."
+      <Section title="Graduated" blurb="Tokens that graduated to Pumpfun or Pons."
         rows={graduated} sorts={["cap", "newest"]} sort={gradSort} setSort={setGradSort} loading={loading}
         empty={q ? "Nothing matches." : "No token has graduated yet."} />
 
-      <Section title="On the curve" blurb="Tokens still climbing toward Pumpfun."
+      <Section title="On the curve" blurb="Tokens still climbing toward Pumpfun or Pons."
         rows={onCurve} sorts={["newest", "cap", "progress"]} sort={curveSort} setSort={setCurveSort} loading={loading}
         empty={data?.length ? "Nothing matches." : "Nothing has been launched yet."} />
 

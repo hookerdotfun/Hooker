@@ -1,0 +1,18 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+libs = ["lib"]
+solc = "0.8.24"
+optimizer = true
+optimizer_runs = 200
+via_ir = true
+remappings = [
+  "forge-std/=lib/forge-std/src/",
+  "openzeppelin-contracts/=lib/openzeppelin-contracts/",
+]
+
+# ⚠ The fork tests are opt-in. `forge test` must pass with no network, or the suite stops being
+# something anybody runs before a deploy. `forge test --match-path 'test/*Fork*'` needs RHC_RPC_URL.
+[profile.default.fuzz]
+runs = 256

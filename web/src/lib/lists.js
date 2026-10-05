@@ -4,8 +4,17 @@ import bs58 from "bs58";
 import { api } from "./api.js";
 
 /** Wallet addresses from free text (lines, commas, spaces). Unique, with anything unreadable reported. */
-export function parseWallets(text) {
+export function parseWallets(text, chain = "sol") {
   const valid = new Map(), invalid = [];
+  if (chain === "rhc") {
+    // 0x addresses, any case; the same address in two cases is one wallet
+    for (const raw of String(text ?? "").split(/[\s,;]+/)) {
+      const w = raw.trim();
+      if (!w) continue;
+      if (/^0x[0-9a-fA-F]{40}$/.test(w)) valid.set(w.toLowerCase(), w); else invalid.push(w);
+    }
+    return { wallets: [...valid.values()], invalid };
+  }
   for (const raw of String(text ?? "").split(/[\s,;]+/)) {
     const w = raw.trim();
     if (!w) continue;

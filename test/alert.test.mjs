@@ -83,3 +83,15 @@ test("deliver posts to both channels, never throws, and redacts the bot token fr
   assert.equal(bad, false);
   assert.doesNotMatch(lines.join(), /secret/);
 });
+
+test("Robinhood Chain: a dead, silent or failing graduator and a low gas wallet are reported; off when not set up", () => {
+  const ok = { status: { at: nowSec - 10, failing: [] }, wallet: "0xG", wei: 5_000_000_000_000_000n, lowWei: 2_000_000_000_000_000n };
+  assert.deepEqual(keys({ evm: ok }), []);
+  assert.deepEqual(keys({ evm: null }), []); // not set up: nothing to watch
+  assert.deepEqual(keys({ evm: { ...ok, status: null } }), ["evm-graduator-down"]);
+  assert.deepEqual(keys({ evm: { ...ok, status: { at: nowSec - 600, failing: [] } } }), ["evm-graduator-down"]);
+  assert.deepEqual(keys({ evm: { ...ok, status: { at: nowSec - 10, failing: [{ token: "0xT", n: 2, step: "graduate", why: "x" }] } } }), []); // a retry or two is normal
+  assert.deepEqual(keys({ evm: { ...ok, status: { at: nowSec - 10, failing: [{ token: "0xT", n: 6, step: "graduate", why: "x" }] } } }), ["evm-failing:0xT"]);
+  assert.deepEqual(keys({ evm: { ...ok, wei: 1_000_000_000_000_000n } }), ["evm-low"]);
+  assert.deepEqual(keys({ evm: { ...ok, wei: null } }), []); // unreadable is not evidence
+});

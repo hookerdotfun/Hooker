@@ -8,10 +8,10 @@ import Logo from "../components/Logo.jsx";
 import Blocks from "../components/Blocks.jsx";
 
 const STEPS = [
-  ["Launch with rules", "Choose your graduation size and the rules your token will enforce. Launch directly from your wallet with your initial buy included. Every token address ends in hook."],
-  ["Bonding curve", "It trades on a Meteora curve that mirrors Pumpfun’s bonding curve keeping market cap and pricing exactly the same."],
-  ["Migration", "When the curve fills the rules are removed and all of the SOL is used to create and launch a new Pumpfun coin in the same transaction. Holders receive their allocation automatically, with no one able to buy ahead of them."],
-  ["Token distribution", "Every holder receives their share of the Pumpfun coin directly in their wallet without having to claim anything. From there, it trades like any normal Pumpfun coin."],
+  ["Launch with rules", "Choose where it graduates, your graduation size and the rules your token will enforce. Launch directly from your wallet with your initial buy included. Every Solana token address ends in hook."],
+  ["Bonding curve", "It trades on a curve that mirrors Pumpfun’s or Pons’s bonding curve keeping market cap and pricing exactly the same."],
+  ["Migration", "When the curve fills the rules are removed and all of the SOL or ETH is used to create and launch a new Pumpfun or Pons coin in the same transaction. Holders receive their allocation automatically, with no one able to buy ahead of them."],
+  ["Token distribution", "Every holder receives their share of the new coin directly in their wallet without having to claim anything. From there, it trades like any normal Pumpfun or Pons coin."],
 ];
 
 
@@ -56,7 +56,7 @@ export default function Home() {
       <section className="phero">
         <div className="phero-mark"><img src="/logo-full.png" alt="" /></div>
         <h1><span className="grad">Hooker</span></h1>
-        <p className="lede">Launch a Pumpfun token with rules built into the token itself.</p>
+        <p className="lede">Launch a Pumpfun or Pons token with rules built into the token itself.</p>
         <div className="row">
           <Link to="/launch" className="btn">Launch a token</Link>
           <Link to="/docs" className="btn ghost">Docs</Link>
@@ -118,11 +118,11 @@ export default function Home() {
         <div className="lhead center">
           <div>
             <h2 className="lhead-t">Graduations</h2>
-            <p className="muted">Every token that graduated to Pumpfun.</p>
+            <p className="muted">Every token that graduated to Pumpfun or Pons.</p>
           </div>
         </div>
         {grads.length === 0 ? (
-          <div className="ledger"><div className="lrow empty-row">When a token graduates to Pumpfun, it shows up here.</div></div>
+          <div className="ledger"><div className="lrow empty-row">When a token graduates to Pumpfun or Pons, it shows up here.</div></div>
         ) : (
           <>
             <div className="ledger">
@@ -133,8 +133,8 @@ export default function Home() {
                     <div className="lmeta">{l.meta?.name ?? l.name} · {ago(l.createdAt)}</div>
                     <div className="lamt">{usd(l.marketCapUsd)}<span>market cap</span></div>
                   </div>
-                  {l.graduated?.pumpUrl
-                    ? <a className="btn tiny ghost" href={l.graduated.pumpUrl} target="_blank" rel="noreferrer">Pumpfun ↗</a>
+                  {l.graduated?.pumpUrl || l.graduated?.ponsUrl
+                    ? <a className="btn tiny ghost" href={l.graduated.pumpUrl ?? l.graduated.ponsUrl} target="_blank" rel="noreferrer">{l.graduated.ponsUrl ? "Pons" : "Pumpfun"} ↗</a>
                     : <Link className="btn tiny ghost" to={`/t/${l.mint}`}>View</Link>}
                 </div>
               ))}

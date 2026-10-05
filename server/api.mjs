@@ -44,11 +44,12 @@ const { OnlinePumpSdk } = require("@pump-fun/pump-sdk");
 const nacl = require("tweetnacl");
 import { LAUNCHED_STATUSES } from "../lib/graduate.mjs";
 import { openDb, listLaunches, getLaunch, registerLaunch, recordIntent } from "../lib/db.mjs";
+import { createEvm } from "../lib/evm.mjs";
 import { initVanity, issueForLaunch, issuedToIpSince, importIncoming, incomingDir, freshCount, RESERVATION_SECS, markLaunched } from "../lib/vanity.mjs";
 
 const URI_MAX = 120;
 
-export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb(`${dataDir}/hooker.db`), configs = null, hookProgram = env.hookProgram, fetchImpl = fetch, launchesPerIpPerHour = 5, vanityReserve, featured: featuredFixed = null, hideBefore: hideBeforeFixed = null } = {}) {
+export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb(`${dataDir}/hooker.db`), configs = null, hookProgram = env.hookProgram, fetchImpl = fetch, launchesPerIpPerHour = 5, vanityReserve, featured: featuredFixed = null, hideBefore: hideBeforeFixed = null, evm: evmOpt } = {}) {
   const dbc = dbcClient(conn);
   const pumpSdk = new OnlinePumpSdk(conn);
   // the configs new launches use, re-read every minute: the graduator replaces them when pump.fun
@@ -90,6 +91,16 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       try { const r = await fetchImpl(url, { signal: AbortSignal.timeout(4000) }); const v = Number(pick(await r.json())); if (v > 1 && v < 100_000) return v; } catch {}
     }
     throw new Error("no SOL price feed answered");
+  });
+  const ETH_FEEDS = [
+    ["https://api.coinbase.com/v2/prices/ETH-USD/spot", (j) => j.data?.amount],
+    ["https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", (j) => j.ethereum?.usd],
+  ];
+  const ethUsd = () => cached("eth:usd", 60_000, async () => {
+    for (const [url, pick] of ETH_FEEDS) {
+      try { const r = await fetchImpl(url, { signal: AbortSignal.timeout(4000) }); const v = Number(pick(await r.json())); if (v > 10 && v < 1_000_000) return v; } catch {}
+    }
+    throw new Error("no ETH price feed answered");
   });
   /** pump.fun's curve today, from its Global account (what new configs are made from) */
   const pumpLive = () => cached("pump:global", 600_000, async () => pumpParams(await pumpSdk.fetchGlobal()));
@@ -325,14 +336,19 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
           if (row) rows.push(row);
         }
       }
+      // Robinhood Chain trades (Pons launches) in the same feed
+      if (evm) rows.push(...(await evm.recentTrades(12).catch(() => [])));
       rows.sort((a, b) => b.time - a.time);
-      return { trades: rows.slice(0, 12), tokens: live.length };
+      return { trades: rows.slice(0, 12), tokens: live.length + (evm ? (await evm.listAll().catch(() => [])).filter((l) => l.status === "trading").length : 0) };
     }),
 
     "GET /api/launches": async () => {
       const ls = listLaunches(db, { limit: 200 }).filter(shown);
       const prog = await progressOf(ls.map((l) => l.pool));
-      const out = await Promise.all(ls.map(async (l) => ({ ...(await summarize(l, prog[l.pool])), meta: await metaQuick(l.mint) })));
+      const sol = await Promise.all(ls.map(async (l) => ({ chain: "sol", ...(await summarize(l, prog[l.pool])), meta: await metaQuick(l.mint) })));
+      // Robinhood Chain launches (Pons) mixed in by launch time; a slow chain read never holds up the list
+      const rhc = evm ? await Promise.race([evm.listAll().catch(() => []), new Promise((r) => setTimeout(() => r([]), 4_000))]) : [];
+      const out = [...sol, ...rhc].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
       // featured coins (our own $HOOKER) are pinned first
       return { launches: [...(await Promise.all(featured.map(summarizeFeatured))), ...out] };
     },
@@ -669,6 +685,10 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       return { ok: true };
     },
   };
+
+  // ── Robinhood Chain: launches that graduate into Pons V2 (lib/evm.mjs), on when EVM_LAUNCHPAD is set ─
+  const evm = evmOpt === undefined ? createEvm({ cached, ethUsd }) : evmOpt;
+  if (evm) Object.assign(routes, evm.routes);
 
   // ── IPFS upload via pump.fun's route (it sends no CORS header, so the browser can't read it) ─
   const MIN_DEV_BUY = 10_000_000n;

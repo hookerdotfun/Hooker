@@ -16,6 +16,7 @@ export default function TokenCard({ l }) {
         <Logo src={l.meta?.image} blank={<div className="tc-blank"><img src="/logo-full.png" alt="" /></div>} />
         <span className={`tc-badge ${done ? "on" : ""}`}>{venueLabel(l)}</span>
         {l.createdAt ? <span className="tc-age">{ago(l.createdAt)}</span> : null}
+        {l.chain === "rhc" && <span className="tc-chain">Robinhood</span>}
       </div>
       <div className="tc-body">
         <div className="tc-sym">${sym}</div>
@@ -25,7 +26,7 @@ export default function TokenCard({ l }) {
         {!done && (
           <>
             <div className="tc-foot">
-              <span>To Pumpfun</span><b>{pct}%</b>
+              <span>To {l.chain === "rhc" ? "Pons" : "Pumpfun"}</span><b>{pct}%</b>
             </div>
             <div className="bar"><span style={{ width: `${Math.max(2, pct)}%` }} /></div>
           </>

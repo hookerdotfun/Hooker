@@ -48,6 +48,24 @@ if (hotWallet && (!state._hot || nowMs - state._hot.at > 600_000)) {
   catch (e) { log(`hot wallet balance unreadable: ${e.message}`); hotLamports = null; }
 }
 
+// Robinhood Chain (Pons), when it is set up: the graduation service's status file and its wallet's ETH (every 10 min)
+let evm = null;
+const evmKeyPath = `${root}keys/evm-graduator.key`;
+if (process.env.EVM_LAUNCHPAD && existsSync(evmKeyPath)) {
+  const { privateKeyToAccount } = await import("viem/accounts");
+  const { readEvmKey } = await import("./evm-graduator.mjs");
+  const { evmClient } = await import("../lib/evm.mjs");
+  let status = null;
+  try { status = JSON.parse(readFileSync(`${env.dataDir}/evm-graduator.heartbeat`, "utf8")); } catch {}
+  const wallet = privateKeyToAccount(readEvmKey(evmKeyPath)).address;
+  let wei = state._evm?.wei != null ? BigInt(state._evm.wei) : null;
+  if (!state._evm || nowMs - state._evm.at > 600_000) {
+    try { wei = await evmClient(process.env.EVM_CALL_RPC_URL || process.env.EVM_RPC_URL || "https://rpc.mainnet.chain.robinhood.com", 4663).getBalance({ address: wallet }); state._evm = { wei: wei.toString(), at: nowMs }; }
+    catch (e) { log(`evm wallet balance unreadable: ${e.shortMessage ?? e.message}`); wei = null; }
+  }
+  evm = { status, wallet, wei, lowWei: BigInt(Math.round(Number(process.env.EVM_LOW_ETH ?? 0.002) * 1e18)) };
+}
+
 let newestBackupSec = null;
 try {
   for (const f of readdirSync(`${root}backups`)) if (f.endsWith(".db")) newestBackupSec = Math.max(newestBackupSec ?? 0, Math.floor(statSync(`${root}backups/${f}`).mtimeMs / 1000));
@@ -56,7 +74,7 @@ try {
 const problems = findProblems({
   nowSec, heartbeat, apiOk: api.ok, apiWhy: api.why, gateExpected, gateOk: gate.ok, launches,
   hotLamports, hotLowLamports: Math.round(Number(process.env.HOT_LOW_SOL ?? 0.3) * 1e9),
-  newestBackupSec, hotWallet: hotWallet?.toBase58(),
+  newestBackupSec, hotWallet: hotWallet?.toBase58(), evm,
 });
 for (const p of problems) log(p.text);
 
@@ -72,7 +90,7 @@ settle(next, results, nowMs);
 // once a day a line saying all is well: silence then means the watchdog itself is gone
 const day = new Date(nowMs).toISOString().slice(0, 10), hour = new Date(nowMs).getUTCHours();
 if (hour >= Number(process.env.ALERT_DAILY_HOUR ?? 8) && next._daily?.day !== day && (ch.webhook || ch.telegram)) {
-  const line = `${problems.length ? `⚠ ${problems.length} open problem(s)` : "✅ all well"} · hot wallet ${hotLamports == null ? "?" : (hotLamports / 1e9).toFixed(3)} SOL · launches: ${Object.entries(counts).map(([s, n]) => `${n} ${s}`).join(", ") || "none"}`;
+  const line = `${problems.length ? `⚠ ${problems.length} open problem(s)` : "✅ all well"} · hot wallet ${hotLamports == null ? "?" : (hotLamports / 1e9).toFixed(3)} SOL${evm ? ` · Pons gas ${evm.wei == null ? "?" : (Number(evm.wei) / 1e18).toFixed(4)} ETH` : ""} · launches: ${Object.entries(counts).map(([s, n]) => `${n} ${s}`).join(", ") || "none"}`;
   if (await deliver(`daily: ${line}`, { ch, log })) next._daily = { day };
 }
 

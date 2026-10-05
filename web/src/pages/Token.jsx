@@ -6,6 +6,7 @@ import { describeRules, duration, short, sol, usd, tokens } from "../lib/format.
 import Copy from "../lib/Copy.jsx";
 import Logo from "../components/Logo.jsx";
 import { parseWallets, fillList } from "../lib/lists.js";
+import TokenRhc from "./TokenRhc.jsx";
 
 function Trade({ t, refresh }) {
   const { address, connect, signTransaction } = useWallet();
@@ -179,8 +180,13 @@ function Phases({ t }) {
   );
 }
 
+/** A 0x address is a Robinhood Chain launch (Pons); anything else is a Solana mint. */
 export default function Token() {
   const { mint } = useParams();
+  return /^0x[0-9a-fA-F]{40}$/.test(mint) ? <TokenRhc key={mint} mint={mint} /> : <TokenSol key={mint} mint={mint} />;
+}
+
+function TokenSol({ mint }) {
   const [search] = useSearchParams();
   const location = useLocation(), navTo = useNavigate();
   const fresh = location.state?.image ?? null; // the image the creator just picked, until IPFS serves it

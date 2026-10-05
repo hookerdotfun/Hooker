@@ -27,7 +27,7 @@ export default function Picker({ info }) {
         <div className="head">
           <div className="ptitle"><span className="rbadge"><span className="rdot" style={{ background: r.color, color: r.color }} /></span><h3>{r.t}</h3></div>
           <div className="row">
-            <span className="chip green">{r.group === "At graduation" ? "Settled on chain" : "Enforced by Solana"}</span>
+            <span className="chip green">{r.group === "At graduation" ? "Settled on chain" : "Enforced by the token"}</span>
             <span className="chip">{r.group}</span>
           </div>
         </div>

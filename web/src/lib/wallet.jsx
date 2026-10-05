@@ -1,5 +1,6 @@
 /**
- * Solana wallet connection through Wallet Standard.
+ * Wallet connection for both chains: Solana wallets through Wallet Standard, EVM wallets (Robinhood Chain,
+ * for launches that graduate into Pons) through EIP-6963. One Connect button, one picker listing both.
  *
  * ⛔ Wallets announce themselves (Phantom, Solflare, Backpack, …); never a `window.solana` global,
  *    which with two extensions installed is whichever loaded last and picks a wallet FOR the user.
@@ -10,6 +11,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { getWallets } from "@wallet-standard/app";
 import bs58 from "bs58";
+import { startDiscovery, subscribe, legacyProvider } from "./eip6963.js";
 
 const Ctx = createContext(null);
 export const useWallet = () => useContext(Ctx);
@@ -17,10 +19,16 @@ export const useWallet = () => useContext(Ctx);
 const CHAIN = import.meta.env.VITE_CHAIN || "solana:mainnet";
 const usable = (w) => Boolean(w.features["standard:connect"] && w.features["solana:signTransaction"] && w.features["solana:signMessage"] && (w.chains || []).some((c) => c.startsWith("solana:")));
 const LAST = "hooker:last-wallet";
-const store = {
-  get: () => { try { return localStorage.getItem(LAST); } catch { return null; } },
-  set: (v) => { try { v ? localStorage.setItem(LAST, v) : localStorage.removeItem(LAST); } catch {} },
-};
+const LAST_EVM = "hooker:last-evm-wallet";
+const kv = (k) => ({
+  get: () => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (v) => { try { v ? localStorage.setItem(k, v) : localStorage.removeItem(k); } catch {} },
+});
+const store = kv(LAST), storeEvm = kv(LAST_EVM);
+/** Robinhood Chain, for a wallet that has never seen it (wallet_addEthereumChain). */
+const RHC = { chainName: "Robinhood Chain", nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }, rpcUrls: ["https://rpc.mainnet.chain.robinhood.com"], blockExplorerUrls: ["https://robinhoodchain.blockscout.com"] };
+const hex = (n) => "0x" + BigInt(n).toString(16);
+const sameAddr = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
 export const cancelled = (e) => e?.code === 4001 || /reject|cancel|denied|closed/i.test(e?.message || "");
 
 const fromB64 = (b) => Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
@@ -34,6 +42,31 @@ export function WalletProvider({ children }) {
   const [error, setError] = useState(null);
   const pending = useRef(null);
   const address = account?.address || null;
+  // "any" (the Connect button), "sol" (a Solana action is waiting), "evm" (a Robinhood Chain action is waiting)
+  const [mode, setMode] = useState("any");
+  const [evmProviders, setEvmProviders] = useState([]);
+  const [evm, setEvm] = useState(null); // { detail, address }
+  const evmAddress = evm?.address ?? null;
+
+  useEffect(() => { startDiscovery(); return subscribe(setEvmProviders); }, []);
+  const evmList = evmProviders.length ? evmProviders : [legacyProvider()].filter(Boolean);
+
+  // quietly reattach the EVM wallet picked last time (eth_accounts never prompts)
+  useEffect(() => {
+    if (evm) return;
+    const rdns = storeEvm.get();
+    const d = rdns && evmList.find((x) => x.info.rdns === rdns);
+    if (!d) return;
+    d.provider.request({ method: "eth_accounts" }).then((a) => { if (a?.[0]) setEvm({ detail: d, address: a[0] }); }).catch(() => {});
+  }, [evmList, evm]);
+
+  useEffect(() => {
+    const p = evm?.detail?.provider;
+    if (!p?.on) return;
+    const onAccounts = (a) => setEvm((cur) => (a?.[0] ? { ...cur, address: a[0] } : null));
+    p.on("accountsChanged", onAccounts);
+    return () => p.removeListener?.("accountsChanged", onAccounts);
+  }, [evm?.detail]);
 
   useEffect(() => {
     const reg = getWallets();
@@ -67,7 +100,8 @@ export function WalletProvider({ children }) {
       const acct = accounts?.[0];
       if (!acct) throw new Error("The wallet returned no account.");
       setActive(w); setAccount(acct); store.set(w.name); setPicker(false);
-      pending.current?.resolve({ w, acct });
+      if (pending.current?.mode === "evm") pending.current.reject(Object.assign(new Error("closed"), { code: 4001 }));
+      else pending.current?.resolve({ w, acct });
       return { w, acct };
     } catch (e) {
       setError(cancelled(e) ? "Connection was cancelled in the wallet." : e.message);
@@ -78,11 +112,59 @@ export function WalletProvider({ children }) {
     }
   }, []);
 
-  const connect = useCallback(() => {
-    if (active && account) return Promise.resolve({ w: active, acct: account });
+  const connect = useCallback((m = "sol") => {
+    if (m === "sol" && active && account) return Promise.resolve({ w: active, acct: account });
+    if (m === "evm" && evm) return Promise.resolve(evm);
+    setMode(m);
     setPicker(true);
-    return new Promise((resolve, reject) => { pending.current = { resolve, reject }; });
-  }, [active, account]);
+    return new Promise((resolve, reject) => { pending.current = { resolve, reject, mode: m }; });
+  }, [active, account, evm]);
+
+  const connectEvmWith = useCallback(async (d) => {
+    setError(null);
+    try {
+      const a = await d.provider.request({ method: "eth_requestAccounts" });
+      if (!a?.[0]) throw new Error("The wallet returned no account.");
+      const v = { detail: d, address: a[0] };
+      setEvm(v); storeEvm.set(d.info.rdns); setPicker(false);
+      if (pending.current?.mode === "evm" || pending.current?.mode === "any") pending.current.resolve(v);
+      else pending.current?.reject(Object.assign(new Error("closed"), { code: 4001 }));
+      return v;
+    } catch (e) {
+      setError(cancelled(e) ? "Connection was cancelled in the wallet." : e.message);
+      throw e;
+    } finally {
+      pending.current = null;
+    }
+  }, []);
+
+  /**
+   * Sends one Robinhood Chain transaction ({chainId, to, data, value} from the API) from the EVM wallet and
+   * waits until it lands. The wallet is moved to the right chain first (and taught it, if it never saw it).
+   */
+  const sendEvm = useCallback(async (tx, { onSent } = {}) => {
+    const v = await connect("evm");
+    const p = v.detail.provider;
+    const want = hex(tx.chainId);
+    if ((await p.request({ method: "eth_chainId" })) !== want) {
+      try { await p.request({ method: "wallet_switchEthereumChain", params: [{ chainId: want }] }); }
+      catch (e) {
+        if (e?.code !== 4902 && e?.data?.originalError?.code !== 4902) throw e;
+        await p.request({ method: "wallet_addEthereumChain", params: [{ chainId: want, ...RHC }] });
+      }
+    }
+    const [from] = await p.request({ method: "eth_accounts" });
+    if (!sameAddr(from, v.address)) throw new Error("Your wallet switched accounts. Try again.");
+    const hash = await p.request({ method: "eth_sendTransaction", params: [{ from, to: tx.to, data: tx.data, value: hex(tx.value ?? 0) }] });
+    onSent?.(hash);
+    for (let i = 0; i < 120; i++) {
+      await new Promise((r) => setTimeout(r, i < 10 ? 700 : 2000));
+      const r = await fetch(`/api/evm/receipt/${hash}`).then((x) => x.json()).catch(() => null);
+      if (r?.status === "success") return { hash, token: r.token };
+      if (r?.status === "reverted") throw new Error(r.error);
+    }
+    throw new Error("The transaction has not landed yet. Check your wallet's activity.");
+  }, [connect]);
 
   /** Signs one base64 transaction (built by the server for `expected`) and returns it signed, base64. */
   const signTransaction = useCallback(async (b64, expected) => {
@@ -113,8 +195,10 @@ export function WalletProvider({ children }) {
 
   const disconnect = useCallback(async () => {
     setAccount(null); setActive(null); store.set(null);
+    setEvm(null); storeEvm.set(null);
+    try { await evm?.detail?.provider?.request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] }); } catch {}
     try { await active?.features["standard:disconnect"]?.disconnect(); } catch {}
-  }, [active]);
+  }, [active, evm]);
 
   const closePicker = useCallback(() => {
     setPicker(false);
@@ -122,13 +206,13 @@ export function WalletProvider({ children }) {
     pending.current = null;
   }, []);
 
-  const value = useMemo(() => ({ providers, address, picker, error, setError, connect, connectWith, disconnect, closePicker, signTransaction, signTransactions, signMessage }),
-    [providers, address, picker, error, connect, connectWith, disconnect, closePicker, signTransaction, signTransactions, signMessage]);
+  const value = useMemo(() => ({ providers, address, picker, mode, error, setError, connect, connectWith, disconnect, closePicker, signTransaction, signTransactions, signMessage, evmProviders: evmList, evmAddress, connectEvmWith, sendEvm }),
+    [providers, address, picker, mode, error, connect, connectWith, disconnect, closePicker, signTransaction, signTransactions, signMessage, evmList, evmAddress, connectEvmWith, sendEvm]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
 export function WalletPicker() {
-  const { providers, picker, connectWith, closePicker, error } = useWallet();
+  const { providers, picker, mode, connectWith, closePicker, error, evmProviders, connectEvmWith } = useWallet();
   // no Cancel button: a tap outside the box or Escape closes it
   useEffect(() => {
     if (!picker) return;
@@ -137,18 +221,37 @@ export function WalletPicker() {
     return () => window.removeEventListener("keydown", onKey);
   }, [picker, closePicker]);
   if (!picker) return null;
+  const sol = mode !== "evm", ev = mode !== "sol";
   return (
     <div className="modal" onClick={closePicker}>
       <div className="modal-box" onClick={(e) => e.stopPropagation()}>
         <h3 className="modal-title">Connect wallet</h3>
-        {providers.length === 0 && <p className="muted">No Solana wallet found in this browser. Install Phantom, Solflare or Backpack, then reload.</p>}
-        <div className="wallets">
-          {providers.map((w) => (
-            <button key={w.name} className="wallet-btn" onClick={() => { connectWith(w).catch(() => {}); }}>
-              {w.icon && <img src={w.icon} alt="" />} {w.name}
-            </button>
-          ))}
-        </div>
+        {sol && (
+          <>
+            {ev && <div className="wallets-head">Solana · Pumpfun launches</div>}
+            {providers.length === 0 && <p className="muted">No Solana wallet found in this browser. Install Phantom, Solflare or Backpack, then reload.</p>}
+            <div className="wallets">
+              {providers.map((w) => (
+                <button key={w.name} className="wallet-btn" onClick={() => { connectWith(w).catch(() => {}); }}>
+                  {w.icon && <img src={w.icon} alt="" />} {w.name}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        {ev && (
+          <>
+            {sol && <div className="wallets-head">Robinhood Chain · Pons launches</div>}
+            {evmProviders.length === 0 && <p className="muted">No EVM wallet found in this browser. Install MetaMask or Rabby, then reload.</p>}
+            <div className="wallets">
+              {evmProviders.map((d) => (
+                <button key={d.info.uuid} className="wallet-btn" onClick={() => { connectEvmWith(d).catch(() => {}); }}>
+                  {d.info.icon && <img src={d.info.icon} alt="" />} {d.info.name}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
         {error && <p className="err">{error}</p>}
       </div>
     </div>

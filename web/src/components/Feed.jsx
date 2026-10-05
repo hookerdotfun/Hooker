@@ -29,9 +29,10 @@ export function Row({ r }) {
  * Landed buys and sells, and refusals that landed as failed transactions, with the hook's reason.
  */
 const fmtSol = (s) => (s >= 1 ? s.toFixed(2) : s >= 0.01 ? s.toFixed(3) : s.toFixed(4));
+// a Robinhood Chain trade carries {amount, unit: "ETH"}; a Solana one {sol}
 const toRow = (t) => ({
   id: t.sig, ok: t.ok, who: t.who,
-  a: t.kind === "buy" ? `Buys $${t.symbol} for ${fmtSol(t.sol)} SOL` : t.kind === "sell" ? `Sells $${t.symbol} for ${fmtSol(t.sol)} SOL` : `A trade on $${t.symbol}`,
+  a: t.kind === "buy" ? `Buys $${t.symbol} for ${fmtSol(t.amount ?? t.sol)} ${t.unit ?? "SOL"}` : t.kind === "sell" ? `Sells $${t.symbol} for ${fmtSol(t.amount ?? t.sol)} ${t.unit ?? "SOL"}` : `A trade on $${t.symbol}`,
   why: t.ok ? null : t.why,
 });
 export function Feed() {

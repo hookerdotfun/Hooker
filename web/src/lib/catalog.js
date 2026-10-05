@@ -113,8 +113,8 @@ export const RULES = [
   },
   {
     id: "fee", s: "Bigger buys pay more, in tokens, to the treasury.", group: "At graduation", color: "#fb923c", t: "Size fee",
-    d: "Bigger buys pay more. Each buy pays a base share plus a little per SOL, up to a cap, taken in coins when it graduates.",
-    chips: ["base + per SOL", "capped", "from public history"],
+    d: "Bigger buys pay more. Each buy pays a base share plus a little per SOL or ETH, up to a cap, taken in tokens.",
+    chips: ["base + per SOL or ETH", "capped", "from public history"],
     demo: [
       { who: "Pa1x…Dd3w", a: "Buys 0.2 SOL", ok: true, why: "pays 0.6%" },
       { who: "Ws5k…Rn9b", a: "Buys 4 SOL", ok: true, why: "pays 2.5%" },
@@ -122,16 +122,16 @@ export const RULES = [
     ],
   },
   {
-    id: "burn", s: "A share of every buy is burned on the Pumpfun coin.", group: "At graduation", color: "#f87171", t: "Auto burn",
-    d: "A share of every buy is burned on the Pumpfun coin at graduation, so the supply holders share is smaller from day one.",
-    chips: ["every buy", "burned on Pumpfun", "public tx"],
+    id: "burn", s: "A share of every buy is burned.", group: "At graduation", color: "#f87171", t: "Auto burn",
+    d: "A share of every buy is burned, so the supply holders share is smaller from day one.",
+    chips: ["every buy", "burned", "public tx"],
     demo: [
-      { who: "Graduation", a: "2% of all buys", ok: true, why: "burned on the Pumpfun coin" },
+      { who: "Graduation", a: "2% of all buys", ok: true, why: "burned" },
     ],
   },
   {
     id: "share", s: "Part of the platform's trading fees buys extra coins for holders.", group: "At graduation", color: "#f472b6", t: "Holder share",
-    d: "First, the platform's trading fees top every holder up to one Pumpfun coin per token they held. Part of what is left buys extra coins for holders, shared by how much they held and for how long.",
+    d: "Part of the platform's trading fees buys extra coins for holders at graduation, shared by how much they held and for how long. On Pumpfun, the fees first top every holder up to one coin per token they held.",
     chips: ["balance x time", "paid at graduation", "automatic"],
     demo: [
       { who: "Long holder", a: "Held 2% for the whole curve", ok: true, why: "biggest extra share" },
@@ -139,11 +139,11 @@ export const RULES = [
     ],
   },
   {
-    id: "holderRewards", s: "Pumpfun's creator rewards go to holders.", group: "At graduation", color: "#4ade80", t: "Creator fees to holders",
-    d: "After graduation, the Pumpfun coin's creator fees go to its holders instead of the creator, through Pumpfun's own holder rewards.",
-    chips: ["Pumpfun holder rewards", "after graduation", "forever"],
+    id: "holderRewards", s: "The coin's creator fees go to holders.", group: "At graduation", color: "#4ade80", t: "Creator fees to holders",
+    d: "After graduation, the coin's creator fees go to its holders instead of the creator, through Pumpfun's holder rewards or Pons's holder fee sharing.",
+    chips: ["holder rewards", "after graduation", "forever"],
     demo: [
-      { who: "Pumpfun", a: "Creator fees on every trade", ok: true, why: "paid to holders" },
+      { who: "Pumpfun or Pons", a: "Creator fees on every trade", ok: true, why: "paid to holders" },
     ],
   },
 ];
