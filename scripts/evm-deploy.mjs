@@ -8,17 +8,25 @@
 // data/evm-mainnet.env with EVM_LAUNCHPAD and EVM_DEPLOY_BLOCK for the box.
 // ⛔ A rehearsal never touches the real chain: it forks it into anvil on :8547 and deploys there.
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdirSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { createWalletClient, createTestClient, http, encodeDeployData, formatEther, getAddress, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { evmClient, rhc, LAUNCHPAD_ABI, LAUNCHPAD_BYTECODE, PONS_FACTORY, PONS_DISTRIBUTORS } from "../lib/evm.mjs";
 import { readEvmKey } from "../server/evm-graduator.mjs";
 
-const [ownerArg, treasuryArg] = process.argv.slice(2).filter((a) => !a.startsWith("--"));
-const live = process.argv.includes("--live");
+const argv = process.argv.slice(2);
+const quoteIdx = argv.indexOf("--quote");
+const quoteArg = quoteIdx >= 0 ? argv[quoteIdx + 1] : null;
+const positional = argv.filter((a, i) => !a.startsWith("--") && (quoteIdx < 0 || i !== quoteIdx + 1));
+const [ownerArg, treasuryArg, recipientArg] = positional;
+const live = argv.includes("--live");
+// --quote <asset address>: a launchpad priced in one of Pons's pair assets (USDG 0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168); default ETH
+const quote = quoteArg ? getAddress(quoteArg) : "0x0000000000000000000000000000000000000000";
 if (!ownerArg || !treasuryArg) { console.error("usage: node scripts/evm-deploy.mjs <owner> <treasury> [--live]"); process.exit(1); }
 const owner = getAddress(ownerArg), treasury = getAddress(treasuryArg);
+// the burn side: graduated coins' Pons creator fees go here (default: the graduation wallet itself, which claims and bridges them)
+const recipient = recipientArg ? getAddress(recipientArg) : null;
 const account = privateKeyToAccount(readEvmKey(process.env.EVM_KEY_FILE || new URL("../keys/evm-graduator.key", import.meta.url).pathname));
 if ([owner, treasury].includes(account.address)) { console.error("the graduation wallet must be a third wallet, not the owner or the treasury"); process.exit(1); }
 
@@ -40,7 +48,8 @@ const wallet = createWalletClient({ account, chain: rhc(4663, url), transport: h
 console.log(`${live ? "LIVE DEPLOY on Robinhood Chain" : "REHEARSAL on a fork of Robinhood Chain (nothing real is sent)"}
   from (graduation wallet)  ${account.address}
   owner                     ${owner}
-  treasury                  ${treasury}`);
+  treasury                  ${treasury}
+  fee recipient (burn side) ${recipient ?? account.address + " (the graduation wallet)"}`);
 let bal = await client.getBalance({ address: account.address });
 console.log(`  graduation wallet holds  ${formatEther(bal)} ETH${live ? "" : " on mainnet"}`);
 if (!live) {
@@ -49,7 +58,7 @@ if (!live) {
   bal = parseEther("1");
   console.log("  (rehearsal: the fork's copy of it was given test ETH; a fork prices gas far above mainnet)");
 }
-const data = encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [owner, treasury, PONS_FACTORY, PONS_DISTRIBUTORS] });
+const data = encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [owner, treasury, recipient ?? account.address, quote, PONS_FACTORY, PONS_DISTRIBUTORS] });
 const gas = await client.estimateGas({ account: account.address, data });
 const fee = await client.getGasPrice();
 const maxFee = fee * 2n; // Robinhood Chain charges the base fee and refunds the rest; this only caps it
@@ -71,12 +80,14 @@ const pad = r.contractAddress;
 // read it all back: a deploy is only done when the chain says so
 const read = (fn) => client.readContract({ address: pad, abi: LAUNCHPAD_ABI, functionName: fn });
 const code = await client.getCode({ address: pad });
-const [o, t, p, d, f] = await Promise.all([read("owner"), read("treasury"), read("pons"), read("distributors"), read("tokenFactory")]);
+const [o, t, p, d, f, fr, qq, grad] = await Promise.all([read("owner"), read("treasury"), read("pons"), read("distributors"), read("tokenFactory"), read("feeRecipient"), read("quote"), read("ponsGraduationEth")]);
 const fcode = await client.getCode({ address: f });
 const checks = [
   [code && code.length > 2, `launchpad code at ${pad} (${(code.length - 2) / 2} bytes)`],
   [o === owner, `owner ${o}`],
   [t === treasury, `treasury ${t}`],
+  [fr === (recipient ?? account.address), `graduated coins' Pons fees go to ${fr}`],
+  [qq.toLowerCase() === quote.toLowerCase(), `priced in ${qq === "0x0000000000000000000000000000000000000000" ? "ETH" : qq}, Pons graduation ${grad}`],
   [p === PONS_FACTORY && d === PONS_DISTRIBUTORS, "Pons V2 factory and holder-fee registry"],
   [fcode && fcode.length > 2, `token factory ${f}`],
 ];
@@ -85,7 +96,15 @@ if (checks.some(([ok]) => !ok)) done(1);
 console.log(`  deployed in block ${r.blockNumber}, cost ${formatEther(r.gasUsed * r.effectiveGasPrice)} ETH`);
 if (live) {
   mkdirSync(new URL("../data/", import.meta.url).pathname, { recursive: true });
-  writeFileSync(new URL("../data/evm-mainnet.env", import.meta.url), `EVM_LAUNCHPAD=${pad}\nEVM_DEPLOY_BLOCK=${r.blockNumber}\n`);
-  console.log("  wrote data/evm-mainnet.env");
+  if (quote === "0x0000000000000000000000000000000000000000") {
+    writeFileSync(new URL("../data/evm-mainnet.env", import.meta.url), `EVM_LAUNCHPAD=${pad}\nEVM_DEPLOY_BLOCK=${r.blockNumber}\n`);
+    console.log("  wrote data/evm-mainnet.env");
+  } else {
+    // pair launchpads are appended: EVM_PAIR_LAUNCHPADS=0xpad@block,…
+    const f = new URL("../data/evm-mainnet-pairs.env", import.meta.url);
+    let cur = ""; try { cur = readFileSync(f, "utf8").trim().replace(/^EVM_PAIR_LAUNCHPADS=/, ""); } catch {}
+    writeFileSync(f, `EVM_PAIR_LAUNCHPADS=${[cur, `${pad}@${r.blockNumber}`].filter(Boolean).join(",")}\n`);
+    console.log("  wrote data/evm-mainnet-pairs.env");
+  }
 } else console.log("  rehearsal OK: run again with --live for the real one");
 done(0);

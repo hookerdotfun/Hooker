@@ -298,6 +298,24 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
 
   // ── handlers ────────────────────────────────────────────────────────────────────────────────
   const routes = {
+    /** The burn ledger: what the burn wallet claimed and burned (lib/flywheel.mjs), for the site. */
+    "GET /api/burns": async () => cached("burns", 10_000, async () => {
+      if (!env.burnWallet) return { on: false };
+      const rows = db.prepare("SELECT at, kind, sig, dry, lamports_in, lamports_spent, hooker_burned FROM burns ORDER BY id DESC LIMIT 50").all();
+      const t = db.prepare("SELECT COALESCE(SUM(CAST(lamports_spent AS INTEGER)), 0) spent, COALESCE(SUM(CAST(hooker_burned AS INTEGER)), 0) burned, COALESCE(SUM(CAST(lamports_in AS INTEGER)), 0) claimed, COUNT(*) n FROM burns WHERE dry = 0 AND kind = 'burn'").get();
+      const coins = db.prepare("SELECT COUNT(*) n FROM launches WHERE fee_to = 'burn' AND pump_mint IS NOT NULL").get().n;
+      // what is waiting right now: the burn wallet's creator vault and its balance
+      const [vault, bal] = await Promise.all([pumpSdk.getCreatorVaultQuoteBalances(env.burnWallet).catch(() => []), conn.getBalance(env.burnWallet, "confirmed").catch(() => 0)]);
+      const waiting = Number(vault.find((b) => b.mint.equals(NATIVE_MINT))?.total?.toString() ?? 0) / 1e9 + bal / 1e9;
+      const usd = await solUsd().catch(() => null);
+      // the Robinhood Chain side's claims and bridges (server/evm-graduator.mjs writes data/evm-burn.json)
+      let rhc = [];
+      try { rhc = JSON.parse(readFileSync(`${dataDir}/evm-burn.json`, "utf8")).rows.map((r) => ({ at: r.at, kind: r.kind === "bridge" ? "bridge" : "claim-rhc", sig: r.hash, dry: !!r.dry, eth: Number(r.eth), sol: r.sol != null ? Number(r.sol) : null })); } catch {}
+      const all = [...rows.map((r) => ({ at: r.at, kind: r.kind, sig: r.sig, dry: !!r.dry, solIn: r.lamports_in ? Number(r.lamports_in) / 1e9 : null, solSpent: r.lamports_spent ? Number(r.lamports_spent) / 1e9 : null, hookerBurned: r.hooker_burned ? Number(r.hooker_burned) / 1e6 : null })), ...rhc].sort((x, y) => y.at - x.at);
+      const rhcCoins = evm ? (await evm.listAll().catch(() => [])).filter((l) => l.graduated?.ponsToken && !l.rules?.holderRewards).length : 0;
+      return { on: true, wallet: env.burnWallet.toBase58(), hookerMint: env.hookerMint.toBase58(), coins: coins + rhcCoins, totals: { solSpent: Number(t.spent) / 1e9, hookerBurned: Number(t.burned) / 1e6, burns: t.n, usdSpent: usd ? (Number(t.spent) / 1e9) * usd : null }, waitingSol: waiting, rows: all.slice(0, 50) };
+    }),
+
     "GET /api/health": async () => ({ ok: true, slot: await cached("slot", 2_000, () => conn.getSlot("confirmed")), hookKeys: freshCount(db) }),
 
     "GET /api/info": async () => {
@@ -309,6 +327,7 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       const sizes = Object.entries(activeConfigs()).map(([g, c]) => Number(g) > 0 && ({ sol: Number(g), config: c.toBase58(), flatConfig: flat[g]?.toBase58() ?? null, feeTiers: tiersReady(g), startCapSol: p.capAt(0), endCapSol: p.capAt(Number(g)), pumpfunOwn: Math.abs(Number(g) - Math.floor(p.completionSol * 10) / 10) < 1e-9 })).filter(Boolean).sort((a, b) => a.sol - b.sol);
       return {
         hookProgram: hookProgram.toBase58(),
+        burnWallet: env.burnWallet?.toBase58() ?? null,
         solUsd: await solUsd().catch(() => null),
         fomoCosigner: env.fomoCosigner.toBase58(),
         appOnly: env.appOnlyEnabled ? { program: env.pumpAppProgram.toBase58() } : null,

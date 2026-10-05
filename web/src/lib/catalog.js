@@ -139,8 +139,8 @@ export const RULES = [
     ],
   },
   {
-    id: "holderRewards", s: "The coin's creator fees go to holders.", group: "At graduation", color: "#4ade80", t: "Creator fees to holders",
-    d: "After graduation, the coin's creator fees go to its holders instead of the creator, through Pumpfun's holder rewards or Pons's holder fee sharing.",
+    id: "holderRewards", s: "The coin's creator fees go to its holders instead of the $HOOKER burn.", group: "At graduation", color: "#4ade80", t: "Creator fees to holders",
+    d: "After graduation, the coin's creator fees go to its holders, through Pumpfun's holder rewards or Pons's holder fee sharing. Without this hook they buy and burn $HOOKER.",
     chips: ["holder rewards", "after graduation", "forever"],
     demo: [
       { who: "Pumpfun or Pons", a: "Creator fees on every trade", ok: true, why: "paid to holders" },

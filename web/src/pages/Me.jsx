@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api.js";
 import { useWallet, cancelled } from "../lib/wallet.jsx";
-import { short, usd, eth } from "../lib/format.js";
+import { short, usd, eth, amt } from "../lib/format.js";
 import TokenCard from "../components/TokenCard.jsx";
 
 /** SOL with sensible precision: 0.0123, 1.25 */
@@ -53,13 +53,15 @@ function EvmRewardRow({ data, ethUsd, onDone }) {
   const { sendEvm } = useWallet();
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState(null);
+  const fees = (data?.creatorFees ?? []).filter((f) => f.amount > 0);
   const total = data?.creatorFeesEth ?? 0;
   async function claim() {
     setMsg(null);
     try {
-      setBusy("Approve the claim in your wallet…");
-      await sendEvm(await api.evmClaimTx(), { onSent: () => setBusy("Claiming…") });
-      setMsg({ ok: true, text: `Claimed ${eth(total, 5)}. It is in your wallet.` });
+      // one claim per asset the creator earned in (each asset is its own launchpad)
+      const todo = fees.length ? fees : [{ symbol: "ETH", amount: total }];
+      for (const f of todo) { setBusy(`Approve the ${f.symbol} claim in your wallet…`); await sendEvm(await api.evmClaimTx({ quote: f.symbol }), { onSent: () => setBusy("Claiming…") }); }
+      setMsg({ ok: true, text: `Claimed ${todo.map((f) => amt(f.amount, f.symbol, 5)).join(" and ")}. It is in your wallet.` });
       onDone();
     } catch (e) {
       setMsg({ ok: false, text: cancelled(e) ? "Cancelled in the wallet." : e.message });
@@ -68,8 +70,8 @@ function EvmRewardRow({ data, ethUsd, onDone }) {
   return (
     <div className="reward">
       <div className="reward-l"><b>Hooker on Robinhood Chain</b><span>Creator fees from your coins before they graduate into Pons.</span></div>
-      <div className="reward-v"><b>{data ? eth(total, 5) : "…"}</b><span>{data && ethUsd ? usd(total * ethUsd) : ""}</span></div>
-      <button type="button" className="btn green small" disabled={!data || total <= 0 || !!busy} onClick={claim}>{busy ? "Claiming…" : "Claim"}</button>
+      <div className="reward-v"><b>{data ? (fees.length ? fees.map((f) => amt(f.amount, f.symbol, 5)).join(" + ") : eth(total, 5)) : "…"}</b><span>{data && ethUsd && !fees.some((f) => f.symbol !== "ETH") ? usd(total * ethUsd) : ""}</span></div>
+      <button type="button" className="btn green small" disabled={!data || (total <= 0 && !fees.length) || !!busy} onClick={claim}>{busy ? "Claiming…" : "Claim"}</button>
       {(busy || msg) && <p className={`reward-msg ${msg?.ok ? "good" : msg ? "err" : "hint"}`}>{busy ?? msg.text}</p>}
     </div>
   );

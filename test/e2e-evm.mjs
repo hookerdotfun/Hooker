@@ -10,9 +10,16 @@
 // re-reads mid-test. Every actor here is a fresh key funded with anvil_setBalance.
 import { spawn } from "node:child_process";
 import { createWalletClient, createTestClient, http, parseEther, formatEther, encodeDeployData } from "viem";
+import { readFileSync } from "node:fs";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import { evmClient, rhc, LAUNCHPAD_ABI, LAUNCHPAD_BYTECODE, TOKEN_ABI, PONS_FACTORY, PONS_DISTRIBUTORS, createEvm } from "../lib/evm.mjs";
-import { createEvmGraduator } from "../server/evm-graduator.mjs";
+// the burn side of the graduation service is configured from the environment at import: a Solana burn wallet, dry mode
+process.env.BURN_WALLET = "hookXkHBi86pLTAPxShbvXiQsAPuyDmnanfXDs38p8n";
+process.env.FLYWHEEL_DRY = "1";
+process.env.EVM_BURN_LEDGER = new URL("../data/test-evm-burn.json", import.meta.url).pathname;
+const { createEvmGraduator } = await import("../server/evm-graduator.mjs");
+import { rmSync } from "node:fs";
+rmSync(process.env.EVM_BURN_LEDGER, { force: true });
 
 const PORT = 8546, URL_ = `http://127.0.0.1:${PORT}`;
 let pass = 0, fail = 0;
@@ -43,7 +50,7 @@ const sendTx = async (a, t) => {
 console.log("Robinhood Chain e2e (fork of live RHC, the real Pons V2)");
 const deployer = await actor(1), owner = await actor(0), treasury = await actor(0), graduatorKey = generatePrivateKey();
 await test.setBalance({ address: privateKeyToAccount(graduatorKey).address, value: parseEther("1") });
-const hash = await walletOf(deployer).sendTransaction({ data: encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [owner.address, treasury.address, PONS_FACTORY, PONS_DISTRIBUTORS] }) });
+const hash = await walletOf(deployer).sendTransaction({ data: encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [owner.address, treasury.address, privateKeyToAccount(graduatorKey).address, "0x0000000000000000000000000000000000000000", PONS_FACTORY, PONS_DISTRIBUTORS] }) });
 const pad = (await client.waitForTransactionReceipt({ hash })).contractAddress;
 const deployBlock = await client.getBlockNumber();
 ok(!!pad, `launchpad deployed at ${pad}`);
@@ -138,6 +145,34 @@ ok(dist !== "0x0000000000000000000000000000000000000000", `creator fees to holde
 await g.tick();
 ok(true, "a second pass of the graduation service is a no-op");
 
+// ── the burn side on Robinhood Chain: the graduated coin's Pons creator fees belong to the graduation wallet ──
+// (this coin chose "creator fees to holders", so its distributor got them; a second, plain coin feeds the burn)
+const c4 = await actor(5);
+const launch4 = await api("POST /api/evm/tx/launch", { body: { from: c4.address, name: "Feed Burn", symbol: "FEED", image: "https://hooker.fun/x.png", size: 0, tier: 0, devBuyEth: "0.01", rules: {} } });
+const r4 = await sendTx(c4, launch4);
+const token4 = (await api("GET /api/evm/receipt/:hash", { params: { hash: r4.transactionHash } })).token;
+await sendTx(await actor(5), await api("POST /api/evm/tx/buy", { body: { token: token4, eth: "3" } }));
+await g.tick();
+cache.clear();
+const s4 = await api("GET /api/evm/token/:token", { params: { token: token4 } });
+const PONS_FACTORY_ABI2 = [{ type: "function", name: "getLaunchedToken", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "tuple", components: [{ name: "token", type: "address" }, { name: "curve", type: "address" }, { name: "deployer", type: "address" }, { name: "creatorFeeRecipient", type: "address" }] }] }, { type: "function", name: "feeEscrow", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] }];
+const lt4 = await client.readContract({ address: PONS_FACTORY, abi: PONS_FACTORY_ABI2, functionName: "getLaunchedToken", args: [s4.graduated.ponsToken] });
+ok(lt4.creatorFeeRecipient.toLowerCase() === privateKeyToAccount(graduatorKey).address.toLowerCase(), "a graduated coin without the holders hook names the graduation wallet as Pons fee recipient (the burn side)");
+// trades on the Pons curve earn creator fees; the keeper sweeps them to the escrow and (dry) claims and quotes the bridge
+const trader = await actor(3);
+const CURVE_ABI2 = [{ type: "function", name: "buy", stateMutability: "payable", inputs: [{ type: "uint256" }, { type: "uint256" }, { type: "address" }], outputs: [{ type: "uint256" }] }];
+await test.increaseTime({ seconds: 10 }); await test.mine({ blocks: 1 }); // past Pons's 3 s snipe tax
+for (let i = 0; i < 3; i++) { const h = await createWalletClient({ account: trader, chain: rhc(4663, URL_), transport: http(URL_) }).writeContract({ address: lt4.curve, abi: CURVE_ABI2, functionName: "buy", args: [parseEther("0.3"), 0n, trader.address], value: parseEther("0.3") }); await client.waitForTransactionReceipt({ hash: h }); }
+// dry mode sends nothing, so the sweep (a state change) is done here as the recipient would; the keeper then claims (dry)
+const sweepHash = await createWalletClient({ account: privateKeyToAccount(graduatorKey), chain: rhc(4663, URL_), transport: http(URL_) }).writeContract({ address: lt4.curve, abi: [{ type: "function", name: "sweepFees", stateMutability: "nonpayable", inputs: [{ type: "uint256" }], outputs: [] }], functionName: "sweepFees", args: [0n] });
+await client.waitForTransactionReceipt({ hash: sweepHash });
+await g.burnTick();
+const escrow = await client.readContract({ address: PONS_FACTORY, abi: PONS_FACTORY_ABI2, functionName: "feeEscrow" });
+const owed = await client.readContract({ address: escrow, abi: [{ type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }] }], functionName: "balanceOf", args: [privateKeyToAccount(graduatorKey).address] });
+const burnLedger = JSON.parse(readFileSync(process.env.EVM_BURN_LEDGER, "utf8"));
+ok(owed > 0n && burnLedger.rows.some((r) => r.kind === "claim" && r.dry), `the coin's fees reached Pons's escrow for the burn side (${formatEther(owed)} ETH owed) and the keeper simulated the claim (dry)`);
+ok(burnLedger.rows.some((r) => r.kind === "bridge" && r.dry && Number(r.sol) > 0), `and quoted the bridge to the Solana burn wallet through Relay: ${burnLedger.rows.find((r) => r.kind === "bridge")?.eth} ETH → ${burnLedger.rows.find((r) => r.kind === "bridge")?.sol} SOL (dry)`);
+
 // ── creator fees ──
 const w = await api("GET /api/evm/wallet/:owner", { params: { owner: creator.address } });
 ok(w.created.includes(token) && w.creatorFeesEth > 0, `the creator's launches and ${w.creatorFeesEth.toFixed(5)} ETH of fees waiting`);
@@ -177,6 +212,72 @@ ok(sq3.feeBps === 0 && got3 > parseEther("1.4") && got3 <= parseEther(sq3.eth), 
 let buyRefused = null;
 try { await api("GET /api/evm/quote/:token", { params: { token: token3 }, query: new URLSearchParams({ eth: "0.1" }) }); } catch (e) { buyRefused = e.message; }
 ok(/not trading/.test(buyRefused ?? ""), "buying a refunding curve is refused");
+// Pons takes launches again (the fork's copy was closed above)
+await test.impersonateAccount({ address: ponsOwner });
+await createWalletClient({ account: ponsOwner, chain: rhc(4663, URL_), transport: http(URL_) }).writeContract({ address: PONS_FACTORY, abi: PONS_ABI, functionName: "setLaunchEnabled", args: [true] });
+await test.stopImpersonatingAccount({ address: ponsOwner });
+
+// ── a launchpad priced in USDG (a Pons pair asset): the curve takes USDG, the coin graduates paired with USDG ──
+console.log("── USDG pair launchpad");
+const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
+const ERC20 = [{ type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }] }];
+const hashU = await walletOf(deployer).sendTransaction({ data: encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [owner.address, treasury.address, privateKeyToAccount(graduatorKey).address, USDG, PONS_FACTORY, PONS_DISTRIBUTORS] }) });
+const padU = (await client.waitForTransactionReceipt({ hash: hashU })).contractAddress;
+// USDG for the test wallets: its balance mapping's storage slot is found by probing (anvil lets us write storage)
+const { keccak256, encodeAbiParameters, toHex, pad: padHex } = await import("viem");
+let usdgSlot = null;
+for (let slot = 0; slot < 40 && usdgSlot === null; slot++) {
+  const probe = privateKeyToAccount(generatePrivateKey()).address;
+  const key = keccak256(encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [probe, BigInt(slot)]));
+  await test.setStorageAt({ address: USDG, index: key, value: padHex(toHex(777n), { size: 32 }) });
+  if ((await client.readContract({ address: USDG, abi: ERC20, functionName: "balanceOf", args: [probe] })) === 777n) usdgSlot = slot;
+}
+ok(usdgSlot !== null, `found USDG's balance slot (${usdgSlot}) on the fork`);
+const giveUsdg = async (who, amount) => test.setStorageAt({ address: USDG, index: keccak256(encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [who, BigInt(usdgSlot)])), value: padHex(toHex(amount), { size: 32 }) });
+// the API sees both launchpads
+const envU = { ...env, pairLaunchpads: [{ address: padU, deployBlock: await client.getBlockNumber() }] };
+const evm2 = createEvm({ cached: (k, ms, fn) => cached("u:" + k, ms, fn), ethUsd: async () => 2700, env: envU, client, logClient: client, log: () => {} });
+const api2 = (route, args = {}) => evm2.routes[route]({ params: {}, query: new URLSearchParams(), body: {}, ...args });
+const infoU = await api2("GET /api/evm/info");
+const usdgPair = infoU.pairs.find((p) => p.symbol === "USDG");
+ok(usdgPair && usdgPair.decimals === 6 && Math.abs(usdgPair.sizes[3].eth - 8090) < 1e-6 && usdgPair.bridgeable, `the API lists the USDG pair: sizes ${usdgPair?.sizes.map((x) => x.eth).join(" / ")} USDG, bridgeable to the burn`);
+const cU = await actor(2); await giveUsdg(cU.address, 5_000_000_000n); // 5,000 USDG
+let needsApprove = null;
+try { await api2("POST /api/evm/tx/launch", { body: { from: cU.address, quote: "USDG", name: "Dollar Hook", symbol: "DHOOK", image: "https://hooker.fun/x.png", size: 0, tier: 1, devBuyEth: "100", rules: {} } }); } catch (e) { needsApprove = e.message; }
+ok(/Approve USDG/.test(needsApprove ?? ""), `without an approval the launch is refused in words: "${needsApprove}"`);
+await sendTx(cU, await api2("POST /api/evm/tx/approve", { body: { quote: "USDG", amount: "100" } }));
+const lU = await api2("POST /api/evm/tx/launch", { body: { from: cU.address, quote: "USDG", name: "Dollar Hook", symbol: "DHOOK", image: "https://hooker.fun/x.png", size: 0, tier: 1, devBuyEth: "100", rules: { maxWalletBps: 5000 } } });
+ok(BigInt(lU.value) === parseEther(infoU.ponsLaunchFeeEth) && lU.quoteIn === "100000000", "the launch sends Pons's fee in ETH and pulls 100 USDG as the first buy");
+const rU = await sendTx(cU, lU);
+const tokenU = (await api2("GET /api/evm/receipt/:hash", { params: { hash: rU.transactionHash } })).token;
+cache.clear();
+let sU = await api2("GET /api/evm/token/:token", { params: { token: tokenU } });
+ok(sU.quote.symbol === "USDG" && sU.raised > 90 && sU.target === 8090 * 0.35 && sU.marketCapUsd > 0, `listed as a USDG launch: ${sU.raised} of ${sU.target} USDG, market cap $${Math.round(sU.marketCapUsd)}`);
+// buyers approve once, then buy in USDG until it fills; the keeper graduates it paired with USDG
+for (let i = 0; i < 6; i++) {
+  cache.clear();
+  if ((await api2("GET /api/evm/token/:token", { params: { token: tokenU } })).status !== "trading") break;
+  const b = await actor(1); await giveUsdg(b.address, 2_000_000_000n);
+  const q = await api2("GET /api/evm/quote/:token", { params: { token: tokenU }, query: new URLSearchParams({ amount: "900" }) });
+  await sendTx(b, await api2("POST /api/evm/tx/approve", { body: { token: tokenU, amount: "900" } }));
+  await sendTx(b, await api2("POST /api/evm/tx/buy", { body: { token: tokenU, amount: "900", minTokensOut: ((BigInt(q.tokens) * 97n) / 100n).toString() } }));
+}
+cache.clear();
+sU = await api2("GET /api/evm/token/:token", { params: { token: tokenU } });
+ok(sU.status === "complete", `the USDG curve filled: ${sU.raised} USDG raised`);
+process.env.EVM_PAIR_LAUNCHPADS = `${padU}@${envU.pairLaunchpads[0].deployBlock}`;
+const { createEvmGraduator: mkG } = await import("../server/evm-graduator.mjs?pairs");
+const gU = mkG({ env: envU, key: graduatorKey, client, timeout: 180_000, log: (m) => console.log(`    ${m}`) });
+await gU.tick();
+cache.clear();
+sU = await api2("GET /api/evm/token/:token", { params: { token: tokenU } });
+const ltU = await client.readContract({ address: PONS_FACTORY, abi: [{ type: "function", name: "getLaunchedToken", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "tuple", components: [{ name: "token", type: "address" }, { name: "curve", type: "address" }, { name: "deployer", type: "address" }, { name: "creatorFeeRecipient", type: "address" }, { name: "pairToken", type: "address" }] }] }], functionName: "getLaunchedToken", args: [sU.graduated?.ponsToken ?? "0x0000000000000000000000000000000000000001"] }).catch(() => null);
+ok(sU.status === "paid" && ltU?.pairToken?.toLowerCase() === USDG.toLowerCase() && sU.marketCapUsd > 0, `graduated into a Pons coin paired with USDG and paid out; cap on Pons $${Math.round(sU.marketCapUsd)}`);
+const wU = await api2("GET /api/evm/wallet/:owner", { params: { owner: cU.address } });
+ok(wU.creatorFees.some((f) => f.symbol === "USDG" && f.amount > 0), `the creator's fees are waiting in USDG (${wU.creatorFees.find((f) => f.symbol === "USDG")?.amount})`);
+await sendTx(cU, await api2("POST /api/evm/tx/claim", { body: { quote: "USDG" } }));
+ok((await api2("GET /api/evm/wallet/:owner", { params: { owner: cU.address } })).creatorFees.length === 0, "claimed in USDG");
+evm2.stop();
 
 evm.stop();
 console.log(`\n${pass} passed, ${fail} failed`);

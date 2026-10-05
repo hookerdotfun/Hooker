@@ -20,9 +20,9 @@ export function duration(secs) {
 }
 
 /** The rules in plain words, in the order a trader cares about. */
-export function describeRules(r, { gradSol, antiSnipe = false, antiSnipeStartPct = 50, fees = null, pair = null, chain = "sol" } = {}) {
-  // Pons launches (Robinhood Chain) graduate into a Pons coin, in ETH, and take the size fee and burn on every buy
-  const pons = chain === "rhc", coin = pons ? "Pons" : "Pumpfun", unit = pons ? "ETH" : "SOL";
+export function describeRules(r, { gradSol, antiSnipe = false, antiSnipeStartPct = 50, fees = null, pair = null, chain = "sol", unit: unitIn = null } = {}) {
+  // Pons launches (Robinhood Chain) graduate into a Pons coin, in ETH or a Pons pair asset, and take the size fee and burn on every buy
+  const pons = chain === "rhc", coin = pons ? "Pons" : "Pumpfun", unit = unitIn ?? (pons ? "ETH" : "SOL");
   if (!r) return [];
   const out = [];
   // the Pumpfun coin's custom pair (lib/pairs.mjs) and its Pumpfun creator fee
@@ -48,7 +48,7 @@ export function describeRules(r, { gradSol, antiSnipe = false, antiSnipeStartPct
   if (r.holderShareBps > 0) out.push({ t: "Holder share", d: `${pct(r.holderShareBps)} of the platform's remaining trading fees buy extra coins for holders, shared by how much they held and for how long.` });
   if (r.fomoOnly || r.appOnly || r.maxWalletBps > 0 || r.earlySecs > 0 || r.allowlist || r.blocklist || r.tradeGuardBps > 0 || r.snipeSecs > 0 || r.bundleMax > 0 || r.hoursOn)
     out.push({ t: "Creator's wallet", d: `The creator's wallet${r.dev ? ` (${short(r.dev)})` : ""} is exempt from these rules, so it can buy at launch. Check what it holds.` });
-  out.push({ t: "Graduation", d: `When ${gradSol ?? "the target"} ${unit} is in the curve it becomes a ${coin} coin and every holder gets their new tokens automatically distributed to their wallet.${r.holderRewards ? ` After that, its ${coin} creator fees go to its holders.` : ""}` });
+  out.push({ t: "Graduation", d: `When ${gradSol ?? "the target"} ${unit} is in the curve it becomes a ${coin} coin and every holder gets their new tokens automatically distributed to their wallet.${r.holderRewards ? ` After that, its ${coin} creator fees go to its holders.` : ` After that, its ${coin} creator fees buy and burn $HOOKER.`}` });
   return out;
 }
 
@@ -75,3 +75,5 @@ export function daysText(mask) {
   return "on " + DAYS.filter((_, i) => mask & (1 << i)).join(", ");
 }
 export const eth = (n, d = 3) => (n == null ? "–" : `${Number(n).toLocaleString(undefined, { maximumFractionDigits: d })} ETH`);
+/** An amount in a named asset: 0.02 ETH, 150 USDG. */
+export const amt = (n, unit, d = 3) => (n == null ? "–" : `${Number(n).toLocaleString(undefined, { maximumFractionDigits: d })} ${unit}`);

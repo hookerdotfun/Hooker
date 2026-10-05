@@ -30,6 +30,7 @@ export const api = {
   rewards: (creator) => req("GET", `/api/rewards/${creator}`),
   claimRewards: (body) => req("POST", "/api/tx/claim-rewards", body),
   // Robinhood Chain (Pons): every call returns {chainId, to, data, value} for the EVM wallet to send
+  burns: () => req("GET", "/api/burns"),
   evmInfo: () => req("GET", "/api/evm/info"),
   evmToken: (t) => req("GET", `/api/evm/token/${t}`),
   evmTrades: (t) => req("GET", `/api/evm/token/${t}/trades`),
@@ -38,8 +39,9 @@ export const api = {
   evmQuote: (t, q) => req("GET", `/api/evm/quote/${t}?${new URLSearchParams(q)}`),
   evmLaunchTx: (body) => req("POST", "/api/evm/tx/launch", body),
   evmBuyTx: (body) => req("POST", "/api/evm/tx/buy", body),
+  evmApproveTx: (body) => req("POST", "/api/evm/tx/approve", body),
   evmSellTx: (body) => req("POST", "/api/evm/tx/sell", body),
-  evmClaimTx: () => req("POST", "/api/evm/tx/claim", {}),
+  evmClaimTx: (body = {}) => req("POST", "/api/evm/tx/claim", body),
   evmListTx: (body) => req("POST", "/api/evm/tx/list", body),
   evmSealTx: (body) => req("POST", "/api/evm/tx/seal", body),
   evmSimulate: (body) => req("POST", "/api/evm/simulate", body),

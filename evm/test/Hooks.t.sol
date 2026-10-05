@@ -20,7 +20,7 @@ contract HooksTest is Test {
 
     function setUp() public {
         vm.warp(T0); // Thu 9 Oct 2025 08:53 UTC
-        pad = new HookerLaunchpad(address(this), treasury, IPonsV2Factory(address(0xBEEF)), IPonsDistributorFactory(address(0xBEEF)));
+        pad = new HookerLaunchpad(address(this), treasury, makeAddr("burnside"), address(0), IPonsV2Factory(address(0xBEEF)), IPonsDistributorFactory(address(0xBEEF)));
         vm.deal(creator, 100 ether);
         vm.deal(alice, 100 ether);
         vm.deal(bob, 100 ether);
@@ -51,7 +51,7 @@ contract HooksTest is Test {
     function test_noRules_tradeFreely_and_sellBack() public {
         HookerToken t = _launch(HookerToken.Rules({maxWalletBps: 0, earlySecs: 0, earlyMaxWalletBps: 0, rampStartBps: 0, rampSecs: 0, tradeGuardBps: 0, allowlist: false, blocklist: false, venueLock: false, hoursOn: false, hoursDays: 0, hoursOpenMin: 0, hoursCloseMin: 0, tzOffsetMin: 0, bundleMax: 0, feeBaseBps: 0, feePerEthBps: 0, feeCapBps: 0, burnBps: 0, holderShareBps: 0, holderRewards: false}));
         vm.prank(alice);
-        uint256 got = pad.buy{value: 1 ether}(address(t), 0);
+        uint256 got = pad.buy{value: 1 ether}(address(t), 1 ether, 0);
         assertEq(t.balanceOf(alice), got);
         uint256 before = alice.balance;
         vm.prank(alice);
@@ -67,7 +67,7 @@ contract HooksTest is Test {
         HookerToken t = _launch(r);
         vm.prank(alice);
         vm.expectRevert(abi.encodeWithSelector(HookerLaunchpad.Refused.selector, "slippage"));
-        pad.buy{value: 0.1 ether}(address(t), type(uint256).max);
+        pad.buy{value: 0.1 ether}(address(t), 0.1 ether, type(uint256).max);
     }
 
     function test_maxWallet_launchWindow_ramp() public {
@@ -81,23 +81,23 @@ contract HooksTest is Test {
         // ~0.6% of supply costs ~0.01 ETH at the start of the curve
         vm.prank(alice);
         _refused(1);
-        pad.buy{value: 0.015 ether}(address(t), 0);
+        pad.buy{value: 0.015 ether}(address(t), 0.015 ether, 0);
         vm.prank(alice);
-        pad.buy{value: 0.005 ether}(address(t), 0);
+        pad.buy{value: 0.005 ether}(address(t), 0.005 ether, 0);
         // after the window: the ramp's cap (1% + 2% × 200/1000 = 1.4%)
         vm.warp(T0 + 200);
         vm.prank(bob);
-        pad.buy{value: 0.02 ether}(address(t), 0);
+        pad.buy{value: 0.02 ether}(address(t), 0.02 ether, 0);
         vm.prank(bob);
         _refused(1);
-        pad.buy{value: 0.02 ether}(address(t), 0);
+        pad.buy{value: 0.02 ether}(address(t), 0.02 ether, 0);
         // fully ramped: 3%
         vm.warp(T0 + 1_200);
         vm.prank(bob);
-        pad.buy{value: 0.02 ether}(address(t), 0);
+        pad.buy{value: 0.02 ether}(address(t), 0.02 ether, 0);
         // a transfer is held to the cap too, and sells always pass
         vm.prank(alice);
-        pad.buy{value: 0.01 ether}(address(t), 0);
+        pad.buy{value: 0.01 ether}(address(t), 0.01 ether, 0);
         uint256 b = t.balanceOf(bob);
         uint256 a = t.balanceOf(alice);
         vm.prank(alice);
@@ -113,7 +113,7 @@ contract HooksTest is Test {
         HookerToken t = _launch(r);
         vm.prank(alice);
         _refused(6);
-        pad.buy{value: 0.01 ether}(address(t), 0);
+        pad.buy{value: 0.01 ether}(address(t), 0.01 ether, 0);
         address[] memory w = new address[](1);
         w[0] = alice;
         vm.prank(alice);
@@ -122,7 +122,7 @@ contract HooksTest is Test {
         vm.prank(creator);
         t.addToList(w);
         vm.prank(alice);
-        pad.buy{value: 0.01 ether}(address(t), 0);
+        pad.buy{value: 0.01 ether}(address(t), 0.01 ether, 0);
         // the list closes when sealed (or after a day)
         vm.prank(creator);
         t.sealList();
@@ -138,9 +138,9 @@ contract HooksTest is Test {
         t2.addToList(w); // bob
         vm.prank(bob);
         _refused(7);
-        pad.buy{value: 0.01 ether}(address(t2), 0);
+        pad.buy{value: 0.01 ether}(address(t2), 0.01 ether, 0);
         vm.prank(alice);
-        pad.buy{value: 0.01 ether}(address(t2), 0);
+        pad.buy{value: 0.01 ether}(address(t2), 0.01 ether, 0);
     }
 
     function test_tradeGuard() public {
@@ -149,9 +149,9 @@ contract HooksTest is Test {
         HookerToken t = _launch(r);
         vm.prank(alice);
         _refused(8);
-        pad.buy{value: 0.05 ether}(address(t), 0);
+        pad.buy{value: 0.05 ether}(address(t), 0.05 ether, 0);
         vm.prank(alice);
-        pad.buy{value: 0.01 ether}(address(t), 0);
+        pad.buy{value: 0.01 ether}(address(t), 0.01 ether, 0);
     }
 
     function test_tradingHours() public {
@@ -164,12 +164,12 @@ contract HooksTest is Test {
         HookerToken t = _launch(r);
         // Thu 08:53 UTC = 10:53 local: open
         vm.prank(alice);
-        pad.buy{value: 0.01 ether}(address(t), 0);
+        pad.buy{value: 0.01 ether}(address(t), 0.01 ether, 0);
         // Thu 15:30 UTC = 17:30 local: closed for buys, sells still pass
         vm.warp(T0 + 6 hours + 37 minutes);
         vm.prank(bob);
         _refused(9);
-        pad.buy{value: 0.01 ether}(address(t), 0);
+        pad.buy{value: 0.01 ether}(address(t), 0.01 ether, 0);
         uint256 half = t.balanceOf(alice) / 2;
         vm.prank(alice);
         pad.sell(address(t), half, 0);
@@ -177,7 +177,7 @@ contract HooksTest is Test {
         vm.warp(T0 + 2 days + 1 hours);
         vm.prank(bob);
         _refused(9);
-        pad.buy{value: 0.01 ether}(address(t), 0);
+        pad.buy{value: 0.01 ether}(address(t), 0.01 ether, 0);
     }
 
     function test_antiBundle() public {
@@ -185,15 +185,15 @@ contract HooksTest is Test {
         r.bundleMax = 2;
         HookerToken t = _launch(r);
         vm.prank(alice);
-        pad.buy{value: 0.01 ether}(address(t), 0);
+        pad.buy{value: 0.01 ether}(address(t), 0.01 ether, 0);
         vm.prank(bob);
-        pad.buy{value: 0.01 ether}(address(t), 0);
+        pad.buy{value: 0.01 ether}(address(t), 0.01 ether, 0);
         vm.prank(carol);
         _refused(11);
-        pad.buy{value: 0.01 ether}(address(t), 0);
+        pad.buy{value: 0.01 ether}(address(t), 0.01 ether, 0);
         vm.roll(block.number + 1);
         vm.prank(carol);
-        pad.buy{value: 0.01 ether}(address(t), 0);
+        pad.buy{value: 0.01 ether}(address(t), 0.01 ether, 0);
     }
 
     function test_venueLock() public {
@@ -201,7 +201,7 @@ contract HooksTest is Test {
         r.venueLock = true;
         HookerToken t = _launch(r);
         vm.prank(alice);
-        pad.buy{value: 0.01 ether}(address(t), 0);
+        pad.buy{value: 0.01 ether}(address(t), 0.01 ether, 0);
         uint256 half = t.balanceOf(alice) / 2;
         vm.prank(alice);
         _refused(4);
@@ -228,7 +228,7 @@ contract HooksTest is Test {
         assertEq(pad.currentFeeBps(t), 300);
         uint256 c0 = pad.creatorFees(creator);
         vm.prank(alice);
-        pad.buy{value: 1 ether}(t, 0);
+        pad.buy{value: 1 ether}(t, 1 ether, 0);
         assertEq(pad.creatorFees(creator) - c0, 0.03 ether * 199 / 300);
         // the platform keeps the rest of both 3% fees (dev buy and alice's)
         assertEq(pad.platformFees(), 2 * (0.03 ether - 0.03 ether * 199 / 300));
@@ -253,11 +253,11 @@ contract HooksTest is Test {
         _refusedWith("not full");
         pad.abort(address(t)); // owner, but not full yet
         vm.prank(alice);
-        pad.buy{value: 10 ether}(address(t), 0); // fills (4.2 ETH), refunds the rest
+        pad.buy{value: 10 ether}(address(t), 10 ether, 0); // fills (4.2 ETH), refunds the rest
         pad.abort(address(t)); // the owner (this test contract); a stranger's abort is covered by the fork test (it asks Pons)
         vm.prank(alice);
         _refusedWith("not trading");
-        pad.buy{value: 1 ether}(address(t), 0);
+        pad.buy{value: 1 ether}(address(t), 1 ether, 0);
         uint256 held = t.balanceOf(alice);
         uint256 before = alice.balance;
         uint256 cf = pad.creatorFees(creator);
@@ -279,7 +279,7 @@ contract HooksTest is Test {
         t.addToList(w);
         pad.setTreasury(makeAddr("treasury2"));
         vm.prank(alice);
-        pad.buy{value: 0.1 ether}(address(t), 0); // the fee transfer to the old treasury passes the allowlist
+        pad.buy{value: 0.1 ether}(address(t), 0.1 ether, 0); // the fee transfer to the old treasury passes the allowlist
         assertGt(t.balanceOf(treasury), 0);
         assertEq(t.balanceOf(makeAddr("treasury2")), 0);
     }
@@ -292,8 +292,8 @@ contract HooksTest is Test {
         r.holderShareBps = 10_000;
         HookerToken t = _launch(r);
         vm.prank(alice);
-        pad.buy{value: 1 ether}(address(t), 0);
-        (, , , , , , , , , uint256 pot, , , , , , , ) = pad.launches(address(t));
+        pad.buy{value: 1 ether}(address(t), 1 ether, 0);
+        (, , , , , , , , , uint256 pot, , , , , , , , ) = pad.launches(address(t));
         assertGt(pot, 0);
         _refusedWith("still live");
         pad.sweepPot(address(t));
@@ -323,10 +323,10 @@ contract HooksTest is Test {
         HookerToken.Rules memory r;
         HookerToken t = _launch(r);
         vm.prank(alice);
-        pad.buy{value: 0.1 ether}(address(t), 0);
+        pad.buy{value: 0.1 ether}(address(t), 0.1 ether, 0);
         vm.warp(T0 + 100);
         vm.prank(bob);
-        pad.buy{value: 0.1 ether}(address(t), 0);
+        pad.buy{value: 0.1 ether}(address(t), 0.1 ether, 0);
         vm.warp(T0 + 200);
         // balance × seconds: alice 200 s, bob 100 s
         assertEq(t.weightOf(alice), t.balanceOf(alice) * 200);

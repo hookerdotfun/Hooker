@@ -16,6 +16,8 @@ It runs on two chains:
 
 Every Solana token address (the Hooker token and its Pumpfun coin) ends in `hook`.
 
+**The burn.** Every coin that graduates names Hooker's burn wallet as its creator, so the coin's creator fees on Pumpfun or Pons buy $HOOKER and burn it, forever (`lib/flywheel.mjs`; Pons fees are bridged to Solana through Relay). A creator can route a coin's fees to its holders instead with the "Creator fees to holders" hook. Every claim and burn is a public transaction, listed on hooker.fun.
+
 ## Hooks
 
 All hooks are off by default; a creator combines any of them.
@@ -33,7 +35,7 @@ All hooks are off by default; a creator combines any of them.
 | FOMO only | Only the FOMO app can buy; selling works anywhere (Solana) |
 | Trading hours | Trades only on chosen days and hours |
 | Size fee · Auto burn · Holder share | Bigger buys pay more, a share of every buy is burned, part of the fees buys extra coins for holders |
-| Creator fees to holders | After graduation, the coin's creator fees go to holders (Pumpfun holder rewards, or Pons holder fee sharing) |
+| Creator fees to holders | After graduation, the coin's creator fees go to its holders instead of the $HOOKER burn (Pumpfun holder rewards, or Pons holder fee sharing) |
 
 Holders can always sell back into the curve.
 
@@ -53,7 +55,8 @@ Holders can always sell back into the curve.
 | `lib/graduate.mjs` | The Solana graduation service: idempotent, ledger-first steps (every signature stored before it is sent) |
 | `lib/pairs.mjs` | Custom pairs: Pumpfun's quote-control list, liquidity and safety checks, the Jupiter swap |
 | `lib/pumpprice.mjs` | Prices a coin in every phase: Hooker curve → Pumpfun curve → PumpSwap |
-| `lib/evm.mjs` | The Robinhood Chain API: launches, quotes, trades, and the transactions the site asks a wallet to send |
+| `lib/evm.mjs` | The Robinhood Chain API: one launchpad per asset (ETH, USDG), launches, quotes, trades, and the transactions the site asks a wallet to send |
+| `lib/flywheel.mjs` | The burn: claims the burn wallet's creator fees, buys $HOOKER on PumpSwap and burns it |
 | `lib/lander.mjs` | Rebroadcasts a signed Solana transaction until it lands or provably cannot |
 | `lib/relay.mjs` | What the API will relay: only the transactions the site builds |
 | `server/api.mjs` | The HTTP API. It builds every transaction; the browser only signs |
@@ -97,7 +100,9 @@ The end-to-end suites run against the **real mainnet bytecode**: Meteora's bondi
 ## On chain
 
 - Solana hook program: `GE5TW1AFehhNFLYiSiaAkmbTjnHTB3hdhw6ZZFBP5sLV`
-- Robinhood Chain launchpad: `0xbd8e608d3314240c48c8e0c85bc3da4a8b8447f8`
+- Robinhood Chain launchpad (ETH): `0x376e3648c57e0e9154103f458cc1ce3f88445c19`
+- Robinhood Chain launchpad (USDG pairs): `0x2d2d03fbfca55626b78d734b5526446e58c6b527`
+- Burn wallet (the creator of every graduated coin, buys and burns $HOOKER): `hookXkHBi86pLTAPxShbvXiQsAPuyDmnanfXDs38p8n`
 
 ## Security
 

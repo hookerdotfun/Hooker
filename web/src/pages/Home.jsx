@@ -28,6 +28,8 @@ export function CHead({ eyebrow, title, sub }) {
 
 export default function Home() {
   const [data, setData] = useState(null);
+  const [burns, setBurns] = useState(null);
+  useEffect(() => { api.burns().then(setBurns).catch(() => {}); }, []);
   const [info, setInfo] = useState(null);
   const [err, setErr] = useState(null);
   const [shownGrads, setShownGrads] = useState(5);
@@ -112,6 +114,41 @@ export default function Home() {
           </>
         )}
       </section>
+
+      {/* ── the burn: graduated coins' creator fees buy and burn $HOOKER (GET /api/burns) ──────── */}
+      {burns?.on && (
+        <section className="psec">
+          <div className="lhead center">
+            <div>
+              <h2 className="lhead-t">Burns</h2>
+              <p className="muted">Every coin that graduates sends its creator fees to the burn wallet, which buys $HOOKER and burns it.</p>
+            </div>
+          </div>
+          <div className="pstats burnstats">
+            <div><b>{burns.totals.hookerBurned.toLocaleString(undefined, { maximumFractionDigits: 0 })}</b><span>$HOOKER burned</span></div>
+            <div><b>{burns.totals.solSpent.toLocaleString(undefined, { maximumFractionDigits: 3 })} SOL</b><span>spent on burns{burns.totals.usdSpent != null ? ` · ${usd(burns.totals.usdSpent)}` : ""}</span></div>
+            <div><b>{burns.coins}</b><span>graduated coins feeding it</span></div>
+            <div><b>{burns.waitingSol.toLocaleString(undefined, { maximumFractionDigits: 3 })} SOL</b><span>waiting for the next burn</span></div>
+          </div>
+          <div className="ledger">
+            {burns.rows.filter((r) => !r.dry).length === 0
+              ? <div className="lrow empty-row">The first burn shows up here, with its transaction.</div>
+              : burns.rows.filter((r) => !r.dry).slice(0, 10).map((r) => (
+                <div className="lrow" key={r.sig}>
+                  <div className="grow">
+                    <div className="lmeta">{{ burn: "Bought and burned", claim: "Claimed creator fees", "claim-rhc": "Claimed Pons creator fees", bridge: "Bridged to the burn wallet" }[r.kind]} · {ago(r.at)}</div>
+                    <div className="lamt">
+                      {r.kind === "burn" ? `${r.hookerBurned.toLocaleString(undefined, { maximumFractionDigits: 0 })} $HOOKER` : r.kind === "claim" ? `${r.solIn.toLocaleString(undefined, { maximumFractionDigits: 4 })} SOL` : `${r.eth.toLocaleString(undefined, { maximumFractionDigits: 5 })} ETH`}
+                      <span>{r.kind === "burn" ? `for ${r.solSpent.toLocaleString(undefined, { maximumFractionDigits: 4 })} SOL` : r.kind === "bridge" ? `→ ${r.sol?.toLocaleString(undefined, { maximumFractionDigits: 4 }) ?? "?"} SOL` : r.kind === "claim" ? "into the burn wallet" : "on Robinhood Chain"}</span>
+                    </div>
+                  </div>
+                  <a className="btn tiny ghost" href={r.kind === "burn" || r.kind === "claim" ? `https://solscan.io/tx/${r.sig}` : `https://robinhoodchain.blockscout.com/tx/${r.sig}`} target="_blank" rel="noreferrer">{r.kind === "burn" || r.kind === "claim" ? "Solscan" : "Blockscout"} ↗</a>
+                </div>
+              ))}
+          </div>
+          <p className="hint center" style={{ marginTop: 10 }}>Burn wallet <a className="link mono" href={`https://solscan.io/account/${burns.wallet}`} target="_blank" rel="noreferrer">{burns.wallet}</a></p>
+        </section>
+      )}
 
       {/* ── graduations: the ledger ────────────────────────────────────────────────────────── */}
       <section className="psec">

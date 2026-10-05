@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api.js";
 import { useWallet, cancelled } from "../lib/wallet.jsx";
-import { describeRules, sol, eth, usd, pct, tzText } from "../lib/format.js";
+import { describeRules, sol, eth, amt, usd, pct, tzText } from "../lib/format.js";
 import { parseWallets, fillList } from "../lib/lists.js";
 import { rulesFor } from "../lib/catalog.js";
 import PairPicker from "../components/PairPicker.jsx";
@@ -60,7 +60,7 @@ export default function Launch() {
   const [info, setInfo] = useState(null);
   const [evmInfo, setEvmInfo] = useState(null);
   const [platform, setPlatform] = useState(params.get("on") === "pons" ? "pons" : "pumpfun");
-  const [f, setF] = useState({ name: "", symbol: "", description: "", twitter: "", website: "", gradSol: null, devBuy: "0.5", feeTier: 0, pair: null, pumpFee: "", ethSize: 1, devBuyEth: "0.02" });
+  const [f, setF] = useState({ name: "", symbol: "", description: "", twitter: "", website: "", gradSol: null, devBuy: "0.5", feeTier: 0, pair: null, pumpFee: "", ethSize: 1, devBuyEth: "0.02", quote: "ETH" });
   const [r, setR] = useState(null);
   const [image, setImage] = useState(null);
   const [imageUrl, setImageUrl] = useState(null);
@@ -117,9 +117,15 @@ export default function Launch() {
   // a size whose fee step is not made yet falls back to the default step
   useEffect(() => { if (size && !(size.feeTiers ?? [0]).includes(Number(f.feeTier))) setF((x) => ({ ...x, feeTier: 0 })); }, [size, f.feeTier]);
   const money = (capSol) => (info?.solUsd ? usd(capSol * info.solUsd) : sol(capSol, 0));
-  const moneyEth = (capEth) => (evmInfo?.ethUsd ? usd(capEth * evmInfo.ethUsd) : eth(capEth, 2));
-  const ponsSize = evmInfo?.sizes?.[Number(f.ethSize)] ?? null;
-  const ponsTier = evmInfo?.feeTiers?.[Number(f.feeTier)] ?? evmInfo?.feeTiers?.[0] ?? null;
+  // the Pons pair asset: ETH or one of Pons's pair assets, each its own launchpad with its own sizes
+  const pair = evmInfo?.pairs?.find((p) => p.symbol === f.quote) ?? evmInfo?.pairs?.[0] ?? null;
+  const unit = pair?.symbol ?? "ETH";
+  const quoteUsd = unit === "ETH" ? evmInfo?.ethUsd : ["USDG", "USDC", "USDT"].includes(unit) ? 1 : null;
+  const moneyEth = (cap) => (quoteUsd ? usd(cap * quoteUsd) : amt(cap, unit, 2));
+  const ponsSizes = pair?.sizes ?? evmInfo?.sizes ?? [];
+  const ponsSize = ponsSizes[Number(f.ethSize)] ?? null;
+  const ponsTier = (pair?.feeTiers ?? evmInfo?.feeTiers)?.[Number(f.feeTier)] ?? evmInfo?.feeTiers?.[0] ?? null;
+  const devQuick = unit === "ETH" ? ["0.01", "0.02", "0.05", "0.1"] : ["10", "25", "50", "100"];
 
   const rules = useMemo(() => r && ({
     fomoOnly: r.fomoOnly, appOnly: false, venueLock: false, holderRewards: r.holderRewards,
@@ -156,9 +162,14 @@ export default function Launch() {
       const cid = /ipfs\/([A-Za-z0-9]+)/.exec(String(metadata?.image ?? ""))?.[1];
       if (!cid) throw new Error("The image upload returned no IPFS address. Try again.");
       setPhase(1); setStep("Preparing the launch…");
+      // a pair asset is pulled from the wallet by the launchpad: approve the first buy first (one extra approval)
+      if (unit !== "ETH" && Number(f.devBuyEth) > 0) {
+        setStep(`Approve ${unit} for the launchpad in your wallet…`);
+        await sendEvm(await api.evmApproveTx({ quote: unit, amount: String(Number(f.devBuyEth)) }));
+      }
       const { maxWalletBps, earlySecs, earlyMaxWalletBps, rampStartBps, rampSecs, tradeGuardBps, allowlist, blocklist, hoursOn, hoursDays, hoursOpenMin, hoursCloseMin, tzOffsetMin, bundleMax, feeBaseBps, feePerSolBps, feeCapBps, burnBps, holderShareBps, holderRewards } = rules;
       const tx = await api.evmLaunchTx({ from: v.address, name: f.name.trim(), symbol: f.symbol.trim(), image: `ipfs://${cid}`, description: f.description.trim(), twitter: f.twitter.trim(), website: f.website.trim(),
-        size: Number(f.ethSize), tier: Number(f.feeTier) || 0, antiSnipe: !!r.antiSnipe, devBuyEth: String(Number(f.devBuyEth || 0)),
+        size: Number(f.ethSize), tier: Number(f.feeTier) || 0, antiSnipe: !!r.antiSnipe, devBuyEth: String(Number(f.devBuyEth || 0)), quote: unit,
         rules: { maxWalletBps, earlySecs, earlyMaxWalletBps, rampStartBps, rampSecs, tradeGuardBps, allowlist, blocklist, hoursOn, hoursDays, hoursOpenMin, hoursCloseMin, tzOffsetMin, bundleMax, feeBaseBps, feePerEthBps: feePerSolBps, feeCapBps, burnBps, holderShareBps, holderRewards } });
       setStep("Approve the launch in your wallet…");
       const { token } = await sendEvm(tx, { onSent: () => setStep("Launching…") });
@@ -235,7 +246,7 @@ export default function Launch() {
   if (!info || !r) return <div className="empty" style={{ marginTop: 60 }}>{err ?? "Loading…"}</div>;
   if (!info.sizes.length && !evmInfo) return <div className="empty" style={{ marginTop: 60 }}>Launching is paused right now. Trading and graduations carry on as normal.</div>;
   const preview = pons
-    ? describeRules({ ...rules, dev: evmAddress }, { gradSol: ponsSize?.eth, antiSnipe: !!r?.antiSnipe, fees: ponsTier, chain: "rhc" })
+    ? describeRules({ ...rules, dev: evmAddress }, { gradSol: ponsSize?.eth, antiSnipe: !!r?.antiSnipe, fees: ponsTier, chain: "rhc", unit })
     : describeRules({ ...rules, dev: address }, { gradSol: f.gradSol, antiSnipe: !!r?.antiSnipe, fees: tierNow, pair: f.pair ? { symbol: f.pair.symbol, creatorFeeBps: Math.round(Number(f.pumpFee || 0) * 100), toHolders: !!r?.holderRewards } : null });
   const catalog = rulesFor(info).filter((x) => !pons || !SOLANA_ONLY.has(x.id));
   const on = isOn(r);
@@ -431,28 +442,42 @@ export default function Launch() {
 
           {pons && (
           <Sec n="4" title="Curve">
+            {/* the pair asset: Pons's own curve for that asset, so the coin graduates paired with it, no swap in between */}
+            {(evmInfo.pairs?.length ?? 0) > 1 && (
+              <>
+                <span className="label" style={{ display: "block", margin: "0 0 8px" }}>Pair on Pons</span>
+                <div className="sizes">
+                  {evmInfo.pairs.map((p) => (
+                    <button type="button" key={p.symbol} className={`size ${unit === p.symbol ? "on" : ""}`} onClick={() => setF({ ...f, quote: p.symbol, devBuyEth: p.symbol === "ETH" ? "0.02" : "25" })}>
+                      <b>{p.symbol}</b><span>{p.symbol === "ETH" ? "the default" : `priced and traded in ${p.symbol}`}</span>
+                    </button>
+                  ))}
+                </div>
+                <p className="hint" style={{ margin: "8px 0 14px" }}>{unit === "ETH" ? "The Pons coin trades against ETH, like most Pons coins." : `Your curve takes ${unit}, and at graduation the Pons coin is paired with ${unit}. Buyers approve ${unit} once before buying.`}</p>
+              </>
+            )}
             <div className="sizes">
-              {evmInfo.sizes.map((s) => (
+              {ponsSizes.map((s) => (
                 <button type="button" key={s.index} className={`size ${Number(f.ethSize) === s.index ? "on" : ""}`} onClick={() => setF({ ...f, ethSize: s.index })}>
-                  <b>{s.eth} ETH</b><span>{`graduates at ${moneyEth(s.endCapEth)}`}</span>
+                  <b>{amt(s.eth, unit, 2)}</b><span>{`graduates at ${moneyEth(s.endCapEth)}`}</span>
                 </button>
               ))}
             </div>
             <div className="caps">
-              <div><span className="k">Starting market cap</span><b>{moneyEth(evmInfo.sizes[0].startCapEth)}</b><span className="hint">same as every Pons coin</span></div>
-              <div><span className="k">Graduation market cap</span><b>{ponsSize ? moneyEth(ponsSize.endCapEth) : "…"}</b><span className="hint">at most {moneyEth(evmInfo.sizes[evmInfo.sizes.length - 1].endCapEth)}, where Pons's own curve fills</span></div>
+              <div><span className="k">Starting market cap</span><b>{ponsSizes[0] ? moneyEth(ponsSizes[0].startCapEth) : "…"}</b><span className="hint">same as every Pons coin in {unit}</span></div>
+              <div><span className="k">Graduation market cap</span><b>{ponsSize ? moneyEth(ponsSize.endCapEth) : "…"}</b><span className="hint">at most {ponsSizes.length ? moneyEth(ponsSizes[ponsSizes.length - 1].endCapEth) : "…"}, where Pons's own curve fills</span></div>
             </div>
             <span className="label" style={{ display: "block", margin: "6px 0 8px" }}>Your fee per trade</span>
             <div className="sizes">
-              {evmInfo.feeTiers.map((t) => (
+              {(pair?.feeTiers ?? evmInfo.feeTiers).map((t) => (
                 <button type="button" key={t.index} className={`size ${Number(f.feeTier) === t.index ? "on" : ""}`} onClick={() => setF({ ...f, feeTier: t.index })}>
                   <b>{t.index === 0 ? pct2(t.creatorPct) : pct2(Math.round(t.creatorPct))}</b><span>{t.index === 0 ? "default · " : ""}buyers pay {pct2(t.totalPct)}</span>
                 </button>
               ))}
             </div>
             <Field label="Your buy at launch" hint={r?.antiSnipe ? "It is the only trade that skips the anti-snipe fee, so it has to be yours, inside the launch itself." : "It is made inside the launch itself so nobody can buy before you."}>
-              <div className="amount"><input type="number" min="0" step="0.01" value={f.devBuyEth} onChange={set("devBuyEth")} /><span>ETH</span></div>
-              <div className="quick">{["0.01", "0.02", "0.05", "0.1"].map((v) => <button type="button" key={v} className={f.devBuyEth === v ? "on" : ""} onClick={() => setF({ ...f, devBuyEth: v })}>{v} ETH</button>)}</div>
+              <div className="amount"><input type="number" min="0" step={unit === "ETH" ? "0.01" : "1"} value={f.devBuyEth} onChange={set("devBuyEth")} /><span>{unit}</span></div>
+              <div className="quick">{devQuick.map((v) => <button type="button" key={v} className={f.devBuyEth === v ? "on" : ""} onClick={() => setF({ ...f, devBuyEth: v })}>{v} {unit}</button>)}</div>
             </Field>
           </Sec>
           )}
@@ -519,7 +544,7 @@ export default function Launch() {
                 </div>
               ))}
             </div>
-            <div className="ptok-foot">{pons ? <><span>{ponsSize?.eth} ETH curve · Robinhood Chain</span><span>then Pons</span></> : <><span>{f.gradSol} SOL curve · Meteora DBC</span><span>then Pumpfun</span></>}</div>
+            <div className="ptok-foot">{pons ? <><span>{ponsSize ? amt(ponsSize.eth, unit, 2) : ""} curve · Robinhood Chain</span><span>then Pons</span></> : <><span>{f.gradSol} SOL curve · Meteora DBC</span><span>then Pumpfun</span></>}</div>
           </section>
 
           <section className="panel checklist">

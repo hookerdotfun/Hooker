@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../lib/api.js";
 import { useWallet, cancelled } from "../lib/wallet.jsx";
-import { describeRules, duration, short, eth, usd } from "../lib/format.js";
+import { describeRules, duration, short, eth, amt, usd } from "../lib/format.js";
 import { parseWallets } from "../lib/lists.js";
 import Copy from "../lib/Copy.jsx";
 import Logo from "../components/Logo.jsx";
@@ -18,8 +18,9 @@ const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toLocaleString(undefined, { ma
 function Trade({ t, refresh }) {
   const { evmAddress, sendEvm, connect } = useWallet();
   const refunding = t.status === "refunding";
+  const unit = t.quote?.symbol ?? "ETH", isEth = unit === "ETH";
   const [side, setSide] = useState(refunding ? "sell" : "buy");
-  const [amount, setAmount] = useState(refunding ? "100" : "0.02");
+  const [amount, setAmount] = useState(refunding ? "100" : isEth ? "0.02" : "25");
   const [bal, setBal] = useState(null);
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState(null);
@@ -34,8 +35,13 @@ function Trade({ t, refresh }) {
       let tx;
       if (side === "buy") {
         if (!(Number(amount) > 0)) throw new Error("Enter an amount.");
-        const q = await api.evmQuote(t.mint, { eth: String(Number(amount)) });
-        tx = await api.evmBuyTx({ token: t.mint, eth: String(Number(amount)), minTokensOut: ((BigInt(q.tokens) * 97n) / 100n).toString() });
+        const q = await api.evmQuote(t.mint, { amount: String(Number(amount)) });
+        // a pair asset is pulled from the wallet by the launchpad: approve it first when the allowance is short
+        if (!isEth) {
+          const b = await api.evmBalance(t.mint, me);
+          if ((b.quote?.allowance ?? 0) < Number(amount)) { setBusy(`Approve ${unit} in your wallet…`); await sendEvm(await api.evmApproveTx({ token: t.mint, amount: String(Number(amount)) })); }
+        }
+        tx = await api.evmBuyTx({ token: t.mint, amount: String(Number(amount)), minTokensOut: ((BigInt(q.tokens) * 97n) / 100n).toString() });
       } else {
         const b = BigInt((await api.evmBalance(t.mint, me)).amount);
         const amt = (b * BigInt(Math.round(Number(amount) * 100))) / 10_000n;
@@ -56,11 +62,11 @@ function Trade({ t, refresh }) {
 
   const isDev = same(evmAddress, t.creator);
   const listBlocked = side === "buy" && !isDev && bal && (t.rules?.allowlist ? !bal.listed : t.rules?.blocklist ? bal.listed : false);
-  const quick = side === "buy" ? ["0.01", "0.02", "0.05", "0.1"] : ["25", "50", "75", "100"];
+  const quick = side === "buy" ? (isEth ? ["0.01", "0.02", "0.05", "0.1"] : ["10", "25", "50", "100"]) : ["25", "50", "75", "100"];
   return (
     <section className="panel trade">
       <div className="tabs">
-        <button className={side === "buy" ? "on" : ""} disabled={refunding} onClick={() => { setSide("buy"); setAmount("0.02"); }}>Buy</button>
+        <button className={side === "buy" ? "on" : ""} disabled={refunding} onClick={() => { setSide("buy"); setAmount(isEth ? "0.02" : "25"); }}>Buy</button>
         <button className={side === "sell" ? "on sell" : ""} onClick={() => { setSide("sell"); setAmount("100"); }}>Sell</button>
       </div>
       {listBlocked ? (
@@ -68,15 +74,15 @@ function Trade({ t, refresh }) {
       ) : (
         <>
           <div className="field">
-            <span className="label">{side === "buy" ? "You pay" : "You sell"}{evmAddress && bal && <b className="mono" style={{ fontWeight: 400 }}>{side === "buy" ? eth(bal.eth, 4) : `${fmtTokens(units(bal.amount))} $${t.symbol}`}</b>}</span>
-            <div className="amount"><input type="number" min="0" step={side === "buy" ? "0.01" : "5"} value={amount} onChange={(e) => setAmount(e.target.value)} /><span>{side === "buy" ? "ETH" : "%"}</span></div>
-            <div className="quick">{quick.map((v) => <button type="button" key={v} className={amount === v ? "on" : ""} onClick={() => setAmount(v)}>{side === "buy" ? `${v} ETH` : `${v}%`}</button>)}</div>
+            <span className="label">{side === "buy" ? "You pay" : "You sell"}{evmAddress && bal && <b className="mono" style={{ fontWeight: 400 }}>{side === "buy" ? amt(bal.quote?.balance ?? bal.eth, unit, 4) : `${fmtTokens(units(bal.amount))} $${t.symbol}`}</b>}</span>
+            <div className="amount"><input type="number" min="0" step={side === "buy" ? (isEth ? "0.01" : "1") : "5"} value={amount} onChange={(e) => setAmount(e.target.value)} /><span>{side === "buy" ? unit : "%"}</span></div>
+            <div className="quick">{quick.map((v) => <button type="button" key={v} className={amount === v ? "on" : ""} onClick={() => setAmount(v)}>{side === "buy" ? `${v} ${unit}` : `${v}%`}</button>)}</div>
           </div>
           <button className={`btn big ${side === "buy" ? "green" : ""}`} disabled={!!busy} onClick={() => { go(); }}>{busy ?? (evmAddress ? (side === "buy" ? "Buy" : "Sell") : "Connect and trade")}</button>
         </>
       )}
       {msg && <p className={msg.ok ? "good" : "err"}>{msg.text}</p>}
-      <p className="hint">On Robinhood Chain, paid in ETH. A buy bigger than what is left of the curve only takes what is left, and the rest comes back.</p>
+      <p className="hint">On Robinhood Chain, paid in {unit}. A buy bigger than what is left of the curve only takes what is left, and the rest comes back.</p>
     </section>
   );
 }
@@ -87,7 +93,7 @@ function CreatorPanel({ t, refresh }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState(null);
-  useEffect(() => { if (same(evmAddress, t.creator)) api.evmWallet(evmAddress).then((w) => setFees(w.creatorFeesEth)).catch(() => {}); }, [evmAddress, t.creator]);
+  useEffect(() => { if (same(evmAddress, t.creator)) api.evmWallet(evmAddress).then((w) => setFees(w.creatorFees?.find((f) => f.symbol === (t.quote?.symbol ?? "ETH"))?.amount ?? 0)).catch(() => {}); }, [evmAddress, t.creator, t.quote?.symbol]);
   if (!same(evmAddress, t.creator)) return null;
   const hasList = t.rules?.allowlist || t.rules?.blocklist;
   const parsed = parseWallets(text, "rhc");
@@ -100,8 +106,8 @@ function CreatorPanel({ t, refresh }) {
   return (
     <section className="panel">
       <h3>You launched this</h3>
-      <p className="hint" style={{ marginBottom: 14 }}>Your fee on every trade is collected in ETH, for all your Robinhood Chain launches together. {fees != null && <>Waiting: <b>{eth(fees, 5)}</b>.</>}</p>
-      <button className="btn small ghost" disabled={!!busy || !fees} onClick={() => run("Claiming…", async () => { await sendEvm(await api.evmClaimTx()); setFees(0); setMsg({ ok: true, text: "Claimed. It is in your wallet." }); })}>Claim trading fees</button>
+      <p className="hint" style={{ marginBottom: 14 }}>Your fee on every trade is collected in {t.quote?.symbol ?? "ETH"}, for all your launches priced in it together. {fees != null && <>Waiting: <b>{amt(fees, t.quote?.symbol ?? "ETH", 5)}</b>.</>}</p>
+      <button className="btn small ghost" disabled={!!busy || !fees} onClick={() => run("Claiming…", async () => { await sendEvm(await api.evmClaimTx({ quote: t.quote?.symbol ?? "ETH" })); setFees(0); setMsg({ ok: true, text: "Claimed. It is in your wallet." }); })}>Claim trading fees</button>
       {hasList && t.status === "trading" && (
         <div className="listtools">
           <h3 style={{ marginTop: 18 }}>Your {t.rules.allowlist ? "allowlist" : "blocklist"}</h3>
@@ -141,7 +147,7 @@ function Trades({ t }) {
           <a key={x.tx + x.trader + x.tokens} className={`trow ${x.isBuy ? "buy" : "sell"}`} href={`https://robinhoodchain.blockscout.com/tx/${x.tx}`} target="_blank" rel="noreferrer">
             <span className="mono">{short(x.trader)}</span>
             <b>{x.isBuy ? "Buy" : "Sell"}</b>
-            <span>{eth(Number(x.eth), 4)}</span>
+            <span>{amt(Number(x.eth), t.quote?.symbol ?? "ETH", 4)}</span>
             <span className="muted">{fmtTokens(Number(x.tokens))}</span>
           </a>
         ))}
@@ -204,7 +210,7 @@ export default function TokenRhc({ mint }) {
   const refunding = t.status === "refunding";
   const windowLeft = t.rules?.earlySecs ? t.createdAt + t.rules.earlySecs - Date.now() / 1000 : 0;
   const at = t.status === "trading" ? 0 : onPons ? 1 : 0.5;
-  const ruleText = describeRules({ ...t.rules, dev: t.creator }, { gradSol: t.targetEth, antiSnipe: t.antiSnipe, antiSnipeStartPct: 50, fees: t.fees, chain: "rhc" });
+  const ruleText = describeRules({ ...t.rules, dev: t.creator }, { gradSol: t.target ?? t.targetEth, antiSnipe: t.antiSnipe, antiSnipeStartPct: 50, fees: t.fees, chain: "rhc", unit: t.quote?.symbol ?? "ETH" });
 
   return (
     <div className="token">
@@ -216,7 +222,7 @@ export default function TokenRhc({ mint }) {
           {t.meta?.description && <p className="desc">{t.meta.description}</p>}
           <div className="row">
             <span className="ca" style={{ marginTop: 0 }}><b>CA</b><span className="ca-addr">{short(t.mint)}</span><Copy text={t.mint} /></span>
-            <span className="chip">Robinhood Chain</span>
+            <span className="chip">Robinhood Chain{t.quote && t.quote.symbol !== "ETH" ? ` · ${t.quote.symbol}` : ""}</span>
             <span className="chip mono">by {short(t.creator)}</span>
             {t.meta?.twitter && <a className="ext" href={t.meta.twitter} target="_blank" rel="noreferrer">X ↗</a>}
             {t.meta?.website && <a className="ext" href={t.meta.website} target="_blank" rel="noreferrer">Website ↗</a>}
@@ -261,8 +267,8 @@ export default function TokenRhc({ mint }) {
                 <div className="label" style={{ marginBottom: 8 }}><span>Bonding curve</span><b>{Math.round(t.progress * 100)}%</b></div>
                 <div className="bar big"><span style={{ width: `${Math.max(2, Math.round(t.progress * 100))}%` }} /></div>
                 <div className="bigstats">
-                  <div><b>{usd(t.marketCapUsd)}</b><span>market cap{t.marketCapEth != null ? ` · ${eth(t.marketCapEth, 2)}` : ""}</span></div>
-                  <div><b>{eth(t.raisedEth, 3).replace(" ETH", "")}</b><span>of {eth(t.targetEth, 2)} raised</span></div>
+                  <div><b>{usd(t.marketCapUsd)}</b><span>market cap{t.marketCap != null ? ` · ${amt(t.marketCap, t.quote?.symbol ?? "ETH", 2)}` : ""}</span></div>
+                  <div><b>{Number(t.raised ?? t.raisedEth).toLocaleString(undefined, { maximumFractionDigits: 3 })}</b><span>of {amt(t.target ?? t.targetEth, t.quote?.symbol ?? "ETH", 2)} raised</span></div>
                   <div><b>{Math.round(t.progress * 100)}%</b><span>to Pons</span></div>
                 </div>
                 {windowLeft > 0 && <p className="note" style={{ marginTop: 14 }}>Launch window: {duration(windowLeft)} left at the tighter wallet cap.</p>}

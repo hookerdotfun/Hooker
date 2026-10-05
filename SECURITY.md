@@ -10,7 +10,7 @@ We answer within a day, fix it before saying anything public, and credit you if 
 ## What is in scope
 
 - `programs/hooker-hook`: the Solana transfer hook (program `GE5TW1AFehhNFLYiSiaAkmbTjnHTB3hdhw6ZZFBP5sLV`).
-- `evm/src`: the Robinhood Chain token and launchpad (`0xbd8e608d3314240c48c8e0c85bc3da4a8b8447f8`).
+- `evm/src`: the Robinhood Chain token and launchpad (`0x376e3648c57e0e9154103f458cc1ce3f88445c19`).
 - `server/` and `lib/`: the API and the graduation services.
 - `web/`: the site.
 

@@ -409,4 +409,61 @@ ok((await g.sweep()) === null, "a second sweep sends nothing");
   console.log(`   held ${held}, base coins ${base}, top-up ${sol(topUp)} of ${sol(fees)} SOL in platform fees`);
   ok(topUp > 0n && (base * 10_000n >= held * 9_999n || topUp === fees), "holders got (at least) one pump.fun coin per window token, topped up from the platform's fees");
 }
+// ── the burn: a graduated coin's creator fees buy and burn $HOOKER (lib/flywheel.mjs) ──────────────
+// launch C has no "creator fees to holders", so its pump.fun coin names the BURN wallet as creator. The coin
+// itself stands in for $HOOKER here: trades on PumpSwap feed the burn wallet's creator vault, the keeper claims it,
+// buys the coin and burns it, and the supply on chain goes down by exactly what it bought.
+console.log("\n── the burn");
+const { createFlywheel, assertSeparate } = await import("../lib/flywheel.mjs");
+const { OnlinePumpAmmSdk, PUMP_AMM_SDK } = createRequire(import.meta.url)("@pump-fun/pump-swap-sdk");
+const burnKp = Keypair.generate(), creatorC = Keypair.generate();
+await fund(burnKp, creatorC);
+// launch C and its coin take two keys from the pool; the ground …hook keys are spent, so two plain ones go in (the suffix is checked above)
+for (let i = 0; i < 2; i++) { const k = Keypair.generate(); db.prepare("INSERT INTO vanity (pubkey, secret, created_at) VALUES (?, ?, ?)").run(k.publicKey.toBase58(), Buffer.from(k.secretKey).toString("base64"), 1 + i); }
+let threw = null; try { assertSeparate(burnKp.publicKey, { hookerCreator: burnKp.publicKey }); } catch (e) { threw = e.message; }
+ok(/HOOKER's creator/.test(threw ?? ""), "the keeper refuses a burn wallet that is $HOOKER's own creator (pump.fun would mix the fees)");
+const { tx: txC, mint: mintKpC, pool: poolC } = await buildLaunchTx({ dbc, hookProgram: HOOK, config: new PublicKey(after.configs[Object.keys(after.configs).map(Number).sort((a, b) => a - b)[0]]), creator: creatorC.publicKey,
+  name: "Burn Me", symbol: "BURNME", uri: IPFS_URI, rules: { ...DEFAULT_RULES, earlySecs: 0, earlyMaxWalletBps: 0 }, devBuyLamports: 100_000_000n, mint: hookKey(creatorC.publicKey), lut });
+await send(txC, [creatorC, mintKpC]);
+const mintC = mintKpC.publicKey;
+{ const cfgC = new PublicKey(after.configs[Object.keys(after.configs).map(Number).sort((a, b) => a - b)[0]]);
+  const thr = BigInt((await getConfig(dbc, cfgC)).migrationQuoteThreshold.toString());
+  for (let i = 0; i < 40; i++) { const p = await getPool(dbc, poolC); if (BigInt(p.quoteReserve.toString()) >= thr) break; const w = Keypair.generate(); await fund(w); await swap(w, true, 3_000_000_000n, { cosign: false, pool: poolC, mint: mintC }); } }
+const gC = new Graduator({ conn, db, platform, treasury: treasury.publicKey, hookProgram: HOOK, configs: Object.fromEntries(Object.entries(after.configs).map(([g, c]) => [g, new PublicKey(c)])), burnWallet: burnKp.publicKey, log: (...a) => console.log("   ·", ...a) });
+await gC.discover();
+for (let i = 0; i < 60 && getLaunch(db, mintC.toBase58()).status !== "done"; i++) { const b4 = getLaunch(db, mintC.toBase58()).status; await gC.tick(); db.prepare("UPDATE launches SET next_try = 0").run(); if (getLaunch(db, mintC.toBase58()).status === b4) await sleep(3000); }
+const LC = getLaunch(db, mintC.toBase58());
+ok(LC.status === "done" && LC.fee_to === "burn", "launch C graduated, with its coin's creator fees routed to the burn");
+const pumpMintC = new PublicKey(LC.pump_mint);
+ok((await pump.fetchBondingCurve(pumpMintC)).creator.equals(burnKp.publicKey), "on chain the pump.fun coin's creator IS the burn wallet (launch A's was its holders' rewards account)");
+{ // the smallest size fills only part of pump.fun's curve: the whale buys the rest, then anyone migrates it to PumpSwap
+  const bs = await pump.fetchBuyState(pumpMintC, whale.publicKey, TOKEN_2022_PROGRAM_ID);
+  const restC = bs.bondingCurve.realTokenReserves;
+  const supC = (await getMint(conn, pumpMintC, "confirmed", TOKEN_2022_PROGRAM_ID)).supply;
+  const costC = getBuySolAmountFromTokenAmount({ global: G2, feeConfig: FC, mintSupply: new BN(supC.toString()), bondingCurve: bs.bondingCurve, amount: restC, quoteMint: new PublicKey("So11111111111111111111111111111111111111112") });
+  await send([...(await PUMP_SDK.buyInstructions({ global: G2, bondingCurveAccountInfo: bs.bondingCurveAccountInfo, bondingCurve: bs.bondingCurve, associatedUserAccountInfo: bs.associatedUserAccountInfo,
+    mint: pumpMintC, user: whale.publicKey, amount: restC, solAmount: costC, slippage: 25, tokenProgram: TOKEN_2022_PROGRAM_ID }))], [whale]);
+  ok((await pump.fetchBondingCurve(pumpMintC)).complete, "coin C's pump.fun curve filled"); }
+await send([ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }), await PUMP_SDK.migrateInstruction({ withdrawAuthority: G2.withdrawAuthority, mint: pumpMintC, user: whale.publicKey, tokenProgram: TOKEN_2022_PROGRAM_ID })], [whale]);
+// trades on PumpSwap: creator fees accrue to the burn wallet's vault
+const amm = new OnlinePumpAmmSdk(conn);
+const poolCKey = canonicalPumpPoolPda(pumpMintC);
+for (let i = 0; i < 3; i++) { const st = await amm.swapSolanaState(poolCKey, whale.publicKey); await send(await PUMP_AMM_SDK.buyQuoteInput(st, new BN(2_000_000_000), 10), [whale]); }
+const fw = createFlywheel({ conn, db, burn: burnKp, hookerMint: pumpMintC, platform: platform.publicKey, log: (...a) => console.log("   ·", ...a) });
+const w0 = await fw.waiting();
+ok(w0.lamports > 0n, `the burn wallet's creator vault holds ${sol(w0.lamports)} SOL of fees from the trades`);
+const supplyBefore = (await getMint(conn, pumpMintC, "confirmed", TOKEN_2022_PROGRAM_ID)).supply;
+const balBefore = BigInt(await lam(burnKp.publicKey));
+await fw.tick();
+const burnRows = db.prepare("SELECT * FROM burns WHERE dry = 0 ORDER BY id").all();
+ok(burnRows.some((r) => r.kind === "claim") && BigInt(await lam(burnKp.publicKey)) !== balBefore, "the keeper claimed the vault into the burn wallet");
+const burnRow = burnRows.find((r) => r.kind === "burn");
+const supplyAfter = (await getMint(conn, pumpMintC, "confirmed", TOKEN_2022_PROGRAM_ID)).supply;
+ok(!!burnRow && supplyBefore - supplyAfter === BigInt(burnRow.hooker_burned), `it bought ${Number(burnRow?.hooker_burned ?? 0) / 1e6} coins on PumpSwap and burned them: the supply fell by exactly that`);
+ok((await bal(pumpMintC, burnKp.publicKey)) === 0n, "nothing of the coin is left in the burn wallet");
+const dryFw = createFlywheel({ conn, db, burn: null, burnPubkey: burnKp.publicKey, hookerMint: pumpMintC, log: (...a) => console.log("   ·", ...a) });
+for (let i = 0; i < 2; i++) { const st = await amm.swapSolanaState(poolCKey, whale.publicKey); await send(await PUMP_AMM_SDK.buyQuoteInput(st, new BN(1_000_000_000), 10), [whale]); }
+const sigBefore = (await conn.getSignaturesForAddress(burnKp.publicKey, { limit: 1 }))[0].signature;
+await dryFw.tick();
+ok((await conn.getSignaturesForAddress(burnKp.publicKey, { limit: 1 }))[0].signature === sigBefore && db.prepare("SELECT COUNT(*) n FROM burns WHERE dry = 1").get().n > 0, "dry mode simulates the claim and the burn and sends nothing");
 console.log(`\nALL ${checks} CHECKS PASSED`);

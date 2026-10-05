@@ -39,15 +39,26 @@ contract HookerLaunchpad is ReentrancyGuard {
     // ─── platform settings ───
     address public owner;
     address public treasury;
+    /// Named as creator-fee recipient of every coin that graduates into Pons (unless its creator chose "creator fees to
+    /// holders"): the burn side. Its fees buy and burn $HOOKER on Solana. Owner-settable; existing coins keep theirs.
+    address public feeRecipient;
+    /// The asset this launchpad's curves are priced in: address(0) for ETH, else one of Pons's approved pair assets
+    /// (USDG, …). One launchpad per asset; a coin graduates into Pons paired with the same asset, no swap in between.
+    address public immutable quote;
     IPonsV2Factory public immutable pons;
     IPonsDistributorFactory public immutable distributors;
     HookerTokenFactory public immutable tokenFactory;
 
-    /// Pons V2's own curve for a native launch (read on chain 5 Oct 2026: phantom 1.68 ETH, whole supply
-    /// on the curve, graduation after 4.2 ETH of real buys). New launches use the values set here.
-    uint256 public virtualEth = 1.68 ether;
+    /// Pons V2's own curve for this asset (ETH, read on chain 5 Oct 2026: phantom 1.68 ETH, whole supply on the
+    /// curve, graduation after 4.2 ETH of real buys; a pair asset's numbers come from `pairTokenEconomics`).
+    /// New launches use the values set here. Every "Eth" below means "quote units" on a pair-asset launchpad.
+    uint256 public virtualEth;
     uint256 public supply = 1e27;
-    uint256 public ponsGraduationEth = 4.2 ether;
+    uint256 public ponsGraduationEth;
+    /// The dynamic fee's "per 1 ETH": 1 ETH here, the same share of a graduation on a pair-asset launchpad.
+    uint256 public feeUnit;
+    /// ETH held for Pons's launch fee on pair-asset launchpads (paid by each creator at launch), plus anything sent here.
+    uint256 public ethReserve;
     /// Graduation sizes, in bps of Pons's own graduation; the last IS Pons's.
     uint16[4] public sizeBps = [3_500, 5_000, 7_000, 10_000];
     /// Fee steps (the same as the Solana side): total bps per trade and the creator's bps of it.
@@ -79,8 +90,9 @@ contract HookerLaunchpad is ReentrancyGuard {
         uint256 ponsPot;    // Pons coins for holder share (by balance × time)
         uint256 circulating;// the snapshot: tokens outside the curve (holders, treasury, dead)
         uint256 paidUpTo;   // payout cursor into the token's holder list
-        uint256 potEth;     // holder share that did not fit under Pons's graduation: paid out as ETH, by weight
+        uint256 potEth;     // holder share that did not fit under Pons's graduation: paid out in the quote asset, by weight
         uint64 lastTrade;   // when it last traded: a curve nobody touches for a long time can be swept by the owner
+        uint256 launchFeeEth; // pair-asset launchpads: the ETH the creator paid for Pons's launch fee
     }
     /// Pons caps each social at 256 bytes; a longer one would make the graduation revert forever.
     uint256 public constant SOCIAL_MAX = 256;
@@ -103,6 +115,7 @@ contract HookerLaunchpad is ReentrancyGuard {
         bool antiSnipe;
         HookerToken.Rules rules;
         uint256 minTokensOut;  // the dev buy's slippage guard
+        uint256 quoteIn;       // pair-asset launchpads: the creator's first buy, pulled from the creator (approve first)
     }
 
     mapping(address => Launch) public launches;
@@ -121,16 +134,28 @@ contract HookerLaunchpad is ReentrancyGuard {
 
     error Refused(string why);
 
-    constructor(address owner_, address treasury_, IPonsV2Factory pons_, IPonsDistributorFactory distributors_) {
+    constructor(address owner_, address treasury_, address feeRecipient_, address quote_, IPonsV2Factory pons_, IPonsDistributorFactory distributors_) {
         owner = owner_;
         treasury = treasury_;
+        feeRecipient = feeRecipient_;
+        quote = quote_;
         pons = pons_;
         distributors = distributors_;
         tokenFactory = new HookerTokenFactory();
+        if (quote_ == address(0)) { virtualEth = 1.68 ether; ponsGraduationEth = 4.2 ether; }
+        else {
+            // Pons's curve for this asset: its phantom quote and where it graduates
+            (uint256 phantom, uint256 threshold,) = pons_.pairTokenEconomics(quote_);
+            if (phantom == 0 || threshold == 0) revert Refused("not a Pons pair asset");
+            virtualEth = phantom;
+            ponsGraduationEth = threshold;
+        }
+        feeUnit = ponsGraduationEth * 10 / 42;
     }
 
-    /// ETH sent straight here (nothing of ours does) is not stranded: it counts as platform fees and can be swept.
-    receive() external payable { platformFees += msg.value; }
+    /// ETH sent straight here: on an ETH launchpad it counts as platform fees; on a pair-asset launchpad it joins the
+    /// reserve that pays Pons's launch fees. Either way it is never stranded.
+    receive() external payable { if (quote == address(0)) platformFees += msg.value; else ethReserve += msg.value; }
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Refused("only the owner");
@@ -139,11 +164,21 @@ contract HookerLaunchpad is ReentrancyGuard {
 
     function setOwner(address o) external onlyOwner { owner = o; }
     function setTreasury(address t) external onlyOwner { treasury = t; }
+    function setFeeRecipient(address r) external onlyOwner { if (r == address(0)) revert Refused("zero"); feeRecipient = r; }
     /// Pons may change its curve; new launches then follow it (existing ones keep theirs).
     function setCurve(uint256 virtualEth_, uint256 supply_, uint256 ponsGraduationEth_) external onlyOwner {
         virtualEth = virtualEth_;
         supply = supply_;
         ponsGraduationEth = ponsGraduationEth_;
+        feeUnit = ponsGraduationEth_ * 10 / 42;
+    }
+    /// A pair-asset launchpad's spare ETH (launch fees that were never needed) goes to the treasury.
+    function sweepEthReserve() external onlyOwner nonReentrant {
+        if (quote == address(0)) revert Refused("no reserve");
+        uint256 a = ethReserve;
+        ethReserve = 0;
+        (bool ok,) = treasury.call{value: a}("");
+        if (!ok) revert Refused("ETH transfer failed");
     }
 
     function tokenCount() external view returns (uint256) { return tokens.length; }
@@ -151,8 +186,10 @@ contract HookerLaunchpad is ReentrancyGuard {
 
     // ─── launch ───
 
-    /// Creates the token and its curve; msg.value is the creator's first buy (at the step's own fee,
-    /// never the anti-snipe fee, the way the Solana launch's first swap pays the minimum).
+    /// Creates the token and its curve. On an ETH launchpad msg.value is the creator's first buy (at the step's own
+    /// fee, never the anti-snipe fee, the way the Solana launch's first swap pays the minimum). On a pair-asset
+    /// launchpad the first buy is `a.quoteIn` of the asset (approved to this contract beforehand) and msg.value must
+    /// be Pons's launch fee in ETH, kept for the graduation.
     function launch(LaunchInput calldata a) external payable nonReentrant returns (address token) {
         if (a.size >= 4 || a.tier >= 4) revert Refused("size or fee step");
         if (bytes(a.name).length == 0 || bytes(a.name).length > 32 || bytes(a.symbol).length == 0 || bytes(a.symbol).length > 10) revert Refused("name or ticker length");
@@ -176,7 +213,14 @@ contract HookerLaunchpad is ReentrancyGuard {
         tokens.push(token);
         emit Launched(token, msg.sender, a.name, a.symbol, a.image, a.size, a.tier, a.antiSnipe, l.gradEth);
 
-        if (msg.value > 0) _buy(token, l, msg.value, a.minTokensOut, msg.sender, feeBps[a.tier]);
+        if (quote == address(0)) {
+            if (msg.value > 0) _buy(token, l, msg.value, a.minTokensOut, msg.sender, feeBps[a.tier]);
+        } else {
+            uint256 fee = pons.launchFee();
+            if (msg.value != fee) revert Refused("send Pons's launch fee in ETH");
+            l.launchFeeEth = fee;
+            if (a.quoteIn > 0) { IERC20(quote).safeTransferFrom(msg.sender, address(this), a.quoteIn); _buy(token, l, a.quoteIn, a.minTokensOut, msg.sender, feeBps[a.tier]); }
+        }
     }
 
     /// Mirrors validateRules in lib/rules.mjs (the Solana hook's `validate`), minus the Solana-only rules.
@@ -184,7 +228,7 @@ contract HookerLaunchpad is ReentrancyGuard {
         if (r.maxWalletBps != 0 && (r.maxWalletBps < 10 || r.maxWalletBps > 10_000)) revert Refused("max per wallet");
         if (r.earlySecs > 86_400) revert Refused("launch window");
         if (r.earlySecs > 0 && (r.earlyMaxWalletBps < 10 || r.earlyMaxWalletBps > 10_000)) revert Refused("launch-window cap");
-        if (r.earlySecs == 0 && r.earlyMaxWalletBps != 0) revert Refused("launch-window cap without a window");
+        if (r.earlySecs == 0 && r.earlyMaxWalletBps != 0) revert Refused("cap without a window");
         if (r.feeCapBps > 2_000 || r.feeBaseBps > r.feeCapBps || (r.feePerEthBps > 0 && r.feeCapBps == 0)) revert Refused("dynamic fee");
         if (r.burnBps > 2_000 || uint256(r.feeCapBps) + r.burnBps > 3_000) revert Refused("burn");
         if (r.holderShareBps > 10_000) revert Refused("holder share");
@@ -195,7 +239,7 @@ contract HookerLaunchpad is ReentrancyGuard {
         } else if (r.rampStartBps != 0) revert Refused("ramp start without a ramp");
         if (r.hoursOn) {
             if (r.hoursDays == 0 || r.hoursDays > 127 || r.hoursOpenMin > 1_439 || r.hoursCloseMin > 1_439 || r.hoursOpenMin == r.hoursCloseMin || r.tzOffsetMin < -720 || r.tzOffsetMin > 840) revert Refused("trading hours");
-        } else if (r.hoursDays != 0 || r.hoursOpenMin != 0 || r.hoursCloseMin != 0 || r.tzOffsetMin != 0) revert Refused("trading hours set without the rule");
+        } else if (r.hoursDays != 0 || r.hoursOpenMin != 0 || r.hoursCloseMin != 0 || r.tzOffsetMin != 0) revert Refused("hours without the rule");
         if (r.bundleMax > 20) revert Refused("anti-bundle");
     }
 
@@ -213,9 +257,12 @@ contract HookerLaunchpad is ReentrancyGuard {
         return start - (start - base) * period / ANTI_SNIPE_PERIODS;
     }
 
-    function buy(address token, uint256 minTokensOut) external payable nonReentrant returns (uint256) {
+    /// A buy: msg.value on an ETH launchpad; `quoteIn` of the asset (approved beforehand) on a pair-asset one.
+    function buy(address token, uint256 quoteIn, uint256 minTokensOut) external payable nonReentrant returns (uint256) {
         Launch storage l = launches[token];
-        return _buy(token, l, msg.value, minTokensOut, msg.sender, currentFeeBps(token));
+        if (quote == address(0)) { if (quoteIn != msg.value) revert Refused("quoteIn must equal the ETH sent"); }
+        else { if (msg.value != 0) revert Refused("not an ETH launchpad"); IERC20(quote).safeTransferFrom(msg.sender, address(this), quoteIn); }
+        return _buy(token, l, quoteIn, minTokensOut, msg.sender, currentFeeBps(token));
     }
 
     function sell(address token, uint256 amount, uint256 minEthOut) external nonReentrant returns (uint256 ethOut) {
@@ -262,7 +309,7 @@ contract HookerLaunchpad is ReentrancyGuard {
         HookerToken.Rules memory r = HookerToken(token).rules();
         uint256 feeTok;
         if (r.feeCapBps > 0) {
-            uint256 fbps = r.feeBaseBps + uint256(r.feePerEthBps) * net / 1 ether;
+            uint256 fbps = r.feeBaseBps + uint256(r.feePerEthBps) * net / feeUnit;
             if (fbps > r.feeCapBps) fbps = r.feeCapBps;
             feeTok = out * fbps / 10_000;
         }
@@ -303,8 +350,16 @@ contract HookerLaunchpad is ReentrancyGuard {
         t.freeze();
 
         uint256 launchFee = pons.launchFee();
-        if (launchFee >= l.realEth) revert Refused("Pons launch fee above the raise");
-        uint256 base = l.realEth - launchFee;
+        uint256 base;
+        if (quote == address(0)) {
+            if (launchFee >= l.realEth) revert Refused("Pons launch fee above the raise");
+            base = l.realEth - launchFee;
+        } else {
+            // the creator paid Pons's fee at launch; if Pons raised it since, the reserve covers the difference
+            if (launchFee > l.launchFeeEth) { if (ethReserve < launchFee - l.launchFeeEth) revert Refused("top up ethReserve"); ethReserve -= launchFee - l.launchFeeEth; }
+            else ethReserve += l.launchFeeEth - launchFee;
+            base = l.realEth;
+        }
         uint256 pot = l.pot;
         // stay under Pons's own graduation: a buy that crossed it would leave the coin between phases. Base ETH that
         // does not fit goes to the platform (it only happens if Pons shrinks its curve); holder share that does not
@@ -315,18 +370,21 @@ contract HookerLaunchpad is ReentrancyGuard {
         uint256 quoteIn = base + pot;
 
         bool toHolders = t.rules().holderRewards;
-        (address coin, address curve, uint256 bought) = IPonsV2LaunchAndBuy(pons.launchForwarder()).launchAndBuy{value: launchFee + quoteIn}(
-            _ponsParams(token, toHolders ? address(this) : l.creator), 0, address(0), quoteIn, 0, address(this), new address[](0)
+        address forwarder = pons.launchForwarder();
+        if (quote != address(0)) IERC20(quote).forceApprove(forwarder, quoteIn); // the periphery pulls the asset from us
+        (address coin, address curve, uint256 bought) = IPonsV2LaunchAndBuy(forwarder).launchAndBuy{value: quote == address(0) ? launchFee + quoteIn : launchFee}(
+            _ponsParams(token, toHolders ? address(this) : feeRecipient), 0, quote, quoteIn, 0, address(this), new address[](0)
         );
+        if (quote != address(0)) IERC20(quote).forceApprove(forwarder, 0);
         uint256 baseBought = pot > 0 ? _baseShare(curve, quoteIn, base, bought) : bought;
 
-        address feeRecipient = l.creator;
+        address recipient = feeRecipient;
         if (toHolders) {
             // Pons's own holder fee sharing: a distributor for the coin takes its creator fees for good
             address d = distributors.distributorOf(coin);
             if (d == address(0)) d = distributors.createFor(coin);
             IPonsCreatorFees(address(pons)).transferCreatorFeeRecipient(coin, d);
-            feeRecipient = d;
+            recipient = d;
         }
 
         l.ponsToken = coin;
@@ -334,7 +392,7 @@ contract HookerLaunchpad is ReentrancyGuard {
         l.ponsPot = bought - baseBought;
         l.circulating = t.totalSupply() - t.balanceOf(address(this));
         l.state = State.Graduated;
-        emit Graduated(token, coin, launchFee + quoteIn, bought, l.ponsPot, feeRecipient);
+        emit Graduated(token, coin, launchFee + quoteIn, bought, l.ponsPot, recipient);
         return coin;
     }
 
@@ -367,7 +425,7 @@ contract HookerLaunchpad is ReentrancyGuard {
         if (l.state != State.Complete) revert Refused("not full");
         string memory why = "called off by the owner";
         if (msg.sender != owner) {
-            if (pons.launchEnabled()) revert Refused("Pons still takes launches: only the owner can call it off");
+            if (pons.launchEnabled()) revert Refused("only the owner, while Pons takes launches");
             why = "Pons stopped taking launches";
         }
         l.state = State.Refunding;
@@ -413,9 +471,9 @@ contract HookerLaunchpad is ReentrancyGuard {
             address h = t.holders(i);
             uint256 a = allocationOf(token, h);
             if (a > 0) coin.safeTransfer(h, a);
-            // the holder share that did not fit under Pons's graduation, as ETH; a wallet that refuses ETH forfeits it
+            // the holder share that did not fit under Pons's graduation, in the quote asset; a wallet that refuses it forfeits it
             uint256 e = _potShare(l, t, h, l.potEth);
-            if (e > 0) { (bool ok,) = h.call{value: e, gas: 50_000}(""); if (!ok) platformFees += e; }
+            if (e > 0 && !_tryPay(h, e)) platformFees += e;
         }
         l.paidUpTo = end;
         done = end == n;
@@ -446,8 +504,13 @@ contract HookerLaunchpad is ReentrancyGuard {
         _send(treasury, a);
     }
 
+    /// Pays in the quote asset: ETH, or the pair asset.
     function _send(address to, uint256 amount) internal {
-        (bool ok,) = to.call{value: amount}("");
-        if (!ok) revert Refused("ETH transfer failed");
+        if (!_tryPay(to, amount)) revert Refused("transfer failed");
+    }
+
+    function _tryPay(address to, uint256 amount) internal returns (bool ok) {
+        if (quote == address(0)) { (ok,) = to.call{value: amount, gas: 50_000}(""); }
+        else { try IERC20(quote).transfer(to, amount) returns (bool r) { ok = r; } catch { ok = false; } }
     }
 }
