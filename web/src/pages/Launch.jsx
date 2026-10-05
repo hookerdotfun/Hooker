@@ -85,7 +85,9 @@ export default function Launch() {
   }, []);
   const pons = (platform === "pons" || (info && !info.sizes.length)) && !!evmInfo;
   // switching to Pons turns off the rules Robinhood Chain has no counterpart for
-  const pick = (p) => { setPlatform(p); if (p === "pons") setR((cur) => cur && ({ ...cur, fomoOnly: false, snipeMins: 0 })); };
+  const pick = (p) => setPlatform(p);
+  // on Pons the Solana-only rules are off, however the form got there (the picker, ?on=pons, ?rule=fomoOnly, or Solana launching paused)
+  useEffect(() => { if (pons) setR((cur) => (cur && (cur.fomoOnly || cur.snipeMins > 0) ? { ...cur, fomoOnly: false, snipeMins: 0 } : cur)); }, [pons, r]);
 
   // arriving from the rule picker: scroll to the rules and flash the one that was picked
   useEffect(() => {
@@ -137,7 +139,7 @@ export default function Launch() {
     snipeMaxCuPrice: r.snipeMins > 0 ? Math.round(Number(r.snipeCu)) : 0,
     snipeMaxTip: r.snipeMins > 0 ? Math.round(Number(r.snipeTip) * 1e9) : 0,
   }), [r]);
-  const listed = useMemo(() => (r && (r.allowlist || r.blocklist) ? parseWallets(r.listText, platform === "pons" && evmInfo ? "rhc" : "sol") : null), [r, platform, evmInfo]);
+  const listed = useMemo(() => (r && (r.allowlist || r.blocklist) ? parseWallets(r.listText, pons ? "rhc" : "sol") : null), [r, pons]);
 
   /** A Pons launch: upload, then ONE transaction from the EVM wallet (token + rules + curve + your buy). */
   async function submitPons() {

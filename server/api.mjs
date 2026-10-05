@@ -28,7 +28,7 @@ import { env, connect } from "../lib/env.mjs";
 import { dbcClient, getPool, getConfig, DBC_PROGRAM, DBC_POOL_AUTHORITY, withPriority, priorityFee } from "../lib/chain.mjs";
 import { buildLaunchTx, buildSwapTx, buildListTxs } from "../lib/launch.mjs";
 import { isRelayable } from "../lib/relay.mjs";
-import { DEFAULT_RULES, decodeRules, decodeList, validateRules, hookPdas, hookErrorFromLogs, HOOK_ERRORS, LIST_MAX, LIST_OPEN_SECS } from "../lib/rules.mjs";
+import { DEFAULT_RULES, decodeRules, decodeList, validateRules, hookPdas, hookErrorFromLogs, HOOK_ERRORS, LIST_MAX, LIST_OPEN_SECS, PUMPFUN_LIMITS } from "../lib/rules.mjs";
 import { ECONOMICS, pumpParams, FEE_TIERS, tierSplit } from "../lib/curve.mjs";
 import { loadConfigState, feeIsFlat, startFeePct, configFor } from "../lib/configs.mjs";
 import { pumpMarketCap } from "../lib/pumpprice.mjs";
@@ -37,7 +37,7 @@ import { listPairs, pairMemo, MAX_CREATOR_FEE_BPS } from "../lib/pairs.mjs";
 import { loadFeatured, featuredSummary, loadHideBefore } from "../lib/featured.mjs";
 import { createRequire } from "node:module";
 import { randomBytes, createHash } from "node:crypto";
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, statSync, readdirSync, unlinkSync } from "node:fs";
 import { wholeImage, imageType } from "../lib/image.mjs";
 const require = createRequire(import.meta.url);
 const { OnlinePumpSdk } = require("@pump-fun/pump-sdk");
@@ -170,7 +170,9 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
   // showed a broken image. Now the page asks OUR server (/api/img/<cid>): it fetches from the first
   // gateway that answers, checks the bytes really are a whole image, and keeps them on disk. A visitor
   // never depends on a gateway (they rate-limit visitors), and never a creator's own host (it would see every visitor).
-  const safeImage = (u) => { const c = cidOf(u); return c && CID_RE.test(c) ? `/api/img/${c}` : null; };
+  const knownCids = new Set();
+  const knowCid = (c) => { knownCids.add(c); if (knownCids.size > 50_000) knownCids.clear(); };
+  const safeImage = (u) => { const c = cidOf(u); if (!c || !CID_RE.test(c)) return null; knowCid(c); return `/api/img/${c}`; };
   /** Metadata without ever holding a page up: whatever is cached, or nothing, after `ms`. */
   const metaQuick = (mint, ms = 1200) => Promise.race([metaOf(mint).catch(() => null), new Promise((r) => setTimeout(() => r(null), ms))]);
 
@@ -210,7 +212,7 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
         const p = await pairInfo(l.pair_mint), u = await solUsd().catch(() => null);
         quote = { mint: l.pair_mint, decimals: p?.decimals, solPerUnit: p?.usdPrice && u ? p.usdPrice / u : null };
       }
-      const pc = await cached(`pumpcap:${l.pump_mint}`, 10_000, () => pumpMarketCap(conn, l.pump_mint, quote ? { quote } : undefined));
+      const pc = await cached(`pumpcap:${l.pump_mint}`, 60_000, () => pumpMarketCap(conn, l.pump_mint, quote ? { quote } : undefined));
       marketCapSol = pc?.marketCapSol ?? null;
       venue = pc?.venue ?? "pump.fun";
     }
@@ -258,7 +260,7 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
     // a featured coin paired with a custom pair is priced in that pair, converted to SOL (lib/pumpprice.mjs)
     let quote = null;
     if (f.quote?.mint) { const q = await pairInfo(f.quote.mint), u = await solUsd().catch(() => null); quote = { mint: f.quote.mint, decimals: f.quote.decimals, solPerUnit: q?.usdPrice && u ? q.usdPrice / u : null }; }
-    const cap = await cached(`pumpcap:${f.mint}`, 10_000, () => pumpMarketCap(conn, f.mint, { ...(p?.realTokens ? { initialRealTokens: p.realTokens } : {}), ...(quote ? { quote } : {}) })).catch(() => null);
+    const cap = await cached(`pumpcap:${f.mint}`, 60_000, () => pumpMarketCap(conn, f.mint, { ...(p?.realTokens ? { initialRealTokens: p.realTokens } : {}), ...(quote ? { quote } : {}) })).catch(() => null);
     return featuredSummary(f, cap, await solUsd().catch(() => null));
   };
 
@@ -329,11 +331,15 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
     "GET /api/trades": async () => cached("trades", 10_000, async () => {
       const live = listLaunches(db, { limit: 50 }).filter((l) => shown(l) && l.status === "trading").slice(0, 10);
       const rows = [];
+      let reads = 0;
       for (const l of live) {
         const sigs = await cached(`sigs:${l.pool}`, 20_000, () => conn.getSignaturesForAddress(new PublicKey(l.pool), { limit: 8 }, "confirmed")).catch(() => []);
         for (const s of sigs) {
-          const row = await cached(`trade:${s.signature}`, 86_400_000, () => readTrade(s, l)).catch(() => null);
-          if (row) rows.push(row);
+          const k = `trade:${s.signature}`;
+          if (!cache.has(k)) { if (reads >= 16) continue; reads++; }
+          // a read that failed (RPC error, an odd transaction) is remembered as "nothing" for a minute, not retried every poll
+          const row = await cached(k, cache.get(k)?.value?.failed ? 60_000 : 86_400_000, () => readTrade(s, l).catch(() => ({ failed: true })));
+          if (row && !row.failed) rows.push(row);
         }
       }
       // Robinhood Chain trades (Pons launches) in the same feed
@@ -398,7 +404,7 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
     "GET /api/pairs": async () => ({ pairs: await pairsNow(), maxCreatorFeeBps: MAX_CREATOR_FEE_BPS }),
 
     /** A token's logo, served from here (see safeImage). Content at a CID never changes: cached for good. */
-    "GET /api/img/:cid": async ({ params }) => ({ __raw: await imageOf(params.cid) }),
+    "GET /api/img/:cid": async ({ req, params }) => ({ __raw: await imageOf(params.cid, clientIp(req)) }),
 
     /** A nonce the creator's wallet signs to prove it is theirs; `…hook` keys are spent on issue. */
     "GET /api/launch-nonce/:creator": async ({ params }) => {
@@ -679,15 +685,19 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       const ps = poolAddr && found[poolAddr.toBase58()];
       const gradSol = ps && sizeOf(ps.config.toBase58());
       if (!gradSol) throw status(404, "no pool on a Hooker config for this mint");
-      if (!(await rulesOf(mint))) throw status(400, "the token has no Hooker rules");
+      const rules = await rulesOf(mint);
+      if (!rules) throw status(400, "the token has no Hooker rules");
+      if (!PublicKey.isOnCurve(new PublicKey(rules.dev).toBytes())) throw status(400, "the token's dev wallet is not a wallet");
       const meta = await metaOf(mint).catch(() => null);
+      if (!meta?.name || !meta?.symbol || !meta?.uri) throw status(400, "the token has no metadata");
+      if (meta.name.length > PUMPFUN_LIMITS.name || meta.symbol.length > PUMPFUN_LIMITS.symbol || meta.uri.length > PUMPFUN_LIMITS.uri) throw status(400, "the token's metadata is longer than Pumpfun allows");
       registerLaunch(db, { mint, pool: poolAddr.toBase58(), config: ps.config.toBase58(), creator: ps.creator.toBase58(), name: meta?.name, symbol: meta?.symbol, uri: meta?.uri, gradSol: Number(gradSol) });
       return { ok: true };
     },
   };
 
   // ── Robinhood Chain: launches that graduate into Pons V2 (lib/evm.mjs), on when EVM_LAUNCHPAD is set ─
-  const evm = evmOpt === undefined ? createEvm({ cached, ethUsd }) : evmOpt;
+  const evm = evmOpt === undefined ? createEvm({ cached, ethUsd, knowCid }) : evmOpt;
   if (evm) Object.assign(routes, evm.routes);
 
   // ── IPFS upload via pump.fun's route (it sends no CORS header, so the browser can't read it) ─
@@ -695,27 +705,61 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
   const MAX_UPLOAD = 4 * 1024 * 1024, UPLOAD_GAP_MS = 5_000, lastUpload = new Map();
   const FIELDS = ["name", "symbol", "description", "twitter", "telegram", "website"];
   /** One logo, by CID: from disk, else the first gateway that returns a whole image (then kept on disk). */
-  const IMG_DIR = `${dataDir}/img`, IMG_MAX = 5 * 1024 * 1024;
-  const imgMiss = new Map(); // CID → when every gateway last failed: not retried for a minute
-  async function imageOf(cid) {
+  const IMG_DIR = `${dataDir}/img`, IMG_MAX = 5 * 1024 * 1024, IMG_DISK_MAX = 1024 * 1024 * 1024, IMG_PARALLEL = 4;
+  const imgMiss = new Map(); // CID → when every gateway last failed: not retried for 10 s
+  // ⛔ the CID is any visitor's input. A CID this API never handed out (not a launch's or a featured coin's logo) is
+  // fetched on a small per-visitor budget, a gateway body is read with a byte cap (never buffered whole first), only a
+  // few gateway fetches run at once, and the disk cache is capped: one visitor cannot fill memory, disk or the gateways.
+  const imgStrangers = new Map(); // ip → { n, at }: unknown CIDs asked for, per 10 minutes
+  let imgInFlight = 0, imgWrites = 0;
+  async function fetchCapped(url) {
+    const r = await fetchImpl(url, { signal: AbortSignal.timeout(8_000), redirect: "follow" });
+    if (!r.ok) { try { await r.body?.cancel(); } catch {} return null; }
+    if (Number(r.headers.get("content-length") ?? 0) > IMG_MAX) { try { await r.body?.cancel(); } catch {} return null; }
+    if (!r.body?.[Symbol.asyncIterator]) { const b = Buffer.from(await r.arrayBuffer()); return b.length > IMG_MAX ? null : b; }
+    const chunks = []; let n = 0;
+    for await (const c of r.body) { n += c.length; if (n > IMG_MAX) { try { await r.body.cancel(); } catch {} return null; } chunks.push(Buffer.from(c)); }
+    return Buffer.concat(chunks);
+  }
+  /** Keeps the image folder under IMG_DISK_MAX by dropping the oldest files (checked every 50 writes). */
+  function trimImages() {
+    try {
+      const files = readdirSync(IMG_DIR).map((f) => { const st = statSync(`${IMG_DIR}/${f}`); return { f, size: st.size, at: st.mtimeMs }; });
+      let total = files.reduce((t, x) => t + x.size, 0);
+      if (total <= IMG_DISK_MAX) return;
+      for (const x of files.sort((p, q) => p.at - q.at)) { if (total <= IMG_DISK_MAX * 0.8) break; try { unlinkSync(`${IMG_DIR}/${x.f}`); total -= x.size; } catch {} }
+    } catch {}
+  }
+  async function imageOf(cid, ip = "") {
     if (!CID_RE.test(cid)) throw status(400, "bad CID");
     const file = `${IMG_DIR}/${createHash("sha256").update(cid).digest("hex")}`;
     if (!existsSync(file)) {
       // a miss is remembered only 10 s: a just-launched token's image can reach the gateways seconds later
       if (Date.now() - (imgMiss.get(cid) ?? 0) < 10_000) throw status(404, "image not available");
+      if (!knownCids.has(cid.split("/")[0])) {
+        const w = imgStrangers.get(ip) ?? { n: 0, at: Date.now() };
+        if (Date.now() - w.at > 600_000) { w.n = 0; w.at = Date.now(); }
+        if (++w.n > 20) throw status(429, "too many unknown images");
+        imgStrangers.set(ip, w);
+        if (imgStrangers.size > 10_000) imgStrangers.clear();
+      }
       // one fetch per CID however many visitors ask at once; only "it is on disk now" is cached
       await cached(`img:${cid}`, 1, async () => {
-        for (const g of GATEWAYS) {
-          try {
-            const r = await fetchImpl(g + cid, { signal: AbortSignal.timeout(8_000), redirect: "follow" });
-            if (!r.ok) continue;
-            const b = Buffer.from(await r.arrayBuffer());
-            if (b.length > IMG_MAX || !wholeImage(b)) continue; // a gateway's error page, or a broken file
-            mkdirSync(IMG_DIR, { recursive: true, mode: 0o700 });
-            writeFileSync(`${file}.tmp`, b); renameSync(`${file}.tmp`, file);
-            return true;
-          } catch {}
-        }
+        for (let i = 0; imgInFlight >= IMG_PARALLEL && i < 50; i++) await new Promise((r) => setTimeout(r, 200));
+        if (imgInFlight >= IMG_PARALLEL) throw status(503, "busy, try again");
+        imgInFlight++;
+        try {
+          for (const g of GATEWAYS) {
+            try {
+              const b = await fetchCapped(g + cid);
+              if (!b || !wholeImage(b)) continue; // too big, a gateway's error page, or a broken file
+              mkdirSync(IMG_DIR, { recursive: true, mode: 0o700 });
+              writeFileSync(`${file}.tmp`, b); renameSync(`${file}.tmp`, file);
+              if (++imgWrites % 50 === 0) trimImages();
+              return true;
+            } catch {}
+          }
+        } finally { imgInFlight--; }
         imgMiss.set(cid, Date.now());
         if (imgMiss.size > 10_000) imgMiss.clear();
         throw status(404, "image not available");

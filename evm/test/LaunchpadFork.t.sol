@@ -12,6 +12,9 @@ interface IPonsCurveT {
     function sell(uint256 tokensIn, uint256 minQuoteOut, address recipient) external returns (uint256);
 }
 
+interface IOwnable { function owner() external view returns (address); }
+interface ISetLaunch { function setLaunchEnabled(bool) external; }
+
 interface IERC20T {
     function balanceOf(address) external view returns (uint256);
     function totalSupply() external view returns (uint256);
@@ -66,7 +69,7 @@ contract LaunchpadForkTest is Test {
         address token = pad.launch{value: 0.05 ether}(_input(0, true, r));
         HookerToken t = HookerToken(token);
         assertGt(t.balanceOf(creator), 0, "dev buy landed");
-        (, , , , , , , , uint256 gradEth, , , , , , ) = pad.launches(token);
+        (, , , , , , , , uint256 gradEth, , , , , , , , ) = pad.launches(token);
         assertEq(gradEth, 1.47 ether, "35% of Pons's 4.2 ETH");
 
         // the anti-snipe fee: 50% at launch, the step's 1.75% after two minutes
@@ -98,7 +101,7 @@ contract LaunchpadForkTest is Test {
         uint256 before = buyers[3].balance;
         vm.prank(buyers[3]);
         pad.buy{value: 2 ether}(token, 0);
-        (HookerLaunchpad.State st, , , , , , , uint256 realEth, , uint256 pot, , , , , ) = pad.launches(token);
+        (HookerLaunchpad.State st, , , , , , , uint256 realEth, , uint256 pot, , , , , , , ) = pad.launches(token);
         assertEq(uint8(st), uint8(HookerLaunchpad.State.Complete), "full");
         assertEq(realEth, 1.47 ether);
         assertLt(before - buyers[3].balance, 2 ether, "refunded the excess");
@@ -108,7 +111,7 @@ contract LaunchpadForkTest is Test {
         pad.buy{value: 0.1 ether}(token, 0);
 
         // our price at the end, to compare with Pons's after graduation
-        (, , , , , uint256 vEth, uint256 vTok, , , , , , , , ) = pad.launches(token);
+        (, , , , , uint256 vEth, uint256 vTok, , , , , , , , , , ) = pad.launches(token);
         uint256 ourPrice = vEth * 1e18 / vTok;
 
         // graduate: the real Pons V2 launch + buy, one transaction
@@ -173,23 +176,60 @@ contract LaunchpadForkTest is Test {
         HookerToken.Rules memory r;
         r.holderRewards = true;
         r.holderShareBps = 10_000;
+        HookerLaunchpad.LaunchInput memory a = _input(3, false, r);
+        a.tier = 3; // the platform's part of a 4.25% fee: more holder share than fits under Pons's cap
         vm.prank(creator);
-        address token = pad.launch{value: 0.1 ether}(_input(3, false, r));
+        address token = pad.launch{value: 0.1 ether}(a);
         // fill the full 4.2 ETH size
         for (uint256 i; i < 6; i++) {
-            (HookerLaunchpad.State st, , , , , , , , , , , , , , ) = pad.launches(token);
+            (HookerLaunchpad.State st, , , , , , , , , , , , , , , , ) = pad.launches(token);
             if (st != HookerLaunchpad.State.Trading) break;
             vm.prank(buyers[i]);
             pad.buy{value: 1 ether}(token, 0);
         }
+        uint256 ethBefore = buyers[0].balance;
         address coin = pad.graduate(token);
         IPonsV2Factory.LaunchedToken memory lt = PONS.getLaunchedToken(coin);
         assertEq(lt.phase, 0, "the full size stays under Pons's own graduation");
+        (, , , , , , , , , , , , , , , uint256 potEth, ) = pad.launches(token);
+        assertGt(potEth, 0, "a full-size curve's holder share does not all fit under Pons's cap");
         address d = DIST.distributorOf(coin);
         assertTrue(d != address(0), "a Pons distributor");
         assertEq(lt.creatorFeeRecipient, d, "creator fees go to holders");
         while (!pad.payout(token, 50)) {}
         assertEq(IERC20T(coin).balanceOf(address(pad)), 0);
+        assertGt(buyers[0].balance, ethBefore, "the holder got its ETH share of the pot that did not fit");
+    }
+
+    /// Pons stops taking launches: a full curve can be called off by ANYONE and every holder sells back, fee-free.
+    function test_refund_when_pons_refuses() public {
+        HookerToken.Rules memory r;
+        vm.prank(creator);
+        address token = pad.launch{value: 0.1 ether}(_input(0, false, r));
+        vm.prank(buyers[0]);
+        pad.buy{value: 2 ether}(token, 0);
+        vm.prank(buyers[1]);
+        vm.expectRevert(abi.encodeWithSelector(HookerLaunchpad.Refused.selector, "Pons still takes launches: only the owner can call it off"));
+        pad.abort(token);
+        // Pons's owner disables launches (as it did to V1)
+        address ponsOwner = IOwnable(address(PONS)).owner();
+        vm.prank(ponsOwner);
+        ISetLaunch(address(PONS)).setLaunchEnabled(false);
+        vm.expectRevert();
+        pad.graduate(token);
+        vm.prank(buyers[1]);
+        pad.abort(token);
+        uint256 before = buyers[0].balance;
+        uint256 held = HookerToken(token).balanceOf(buyers[0]);
+        vm.prank(buyers[0]);
+        uint256 back = pad.sell(token, held, 0);
+        assertEq(buyers[0].balance - before, back);
+        assertGt(back, 1.37 ether, "the whole raise but the creator's own buy comes back, with no fee");
+        uint256 cheld = HookerToken(token).balanceOf(creator);
+        vm.prank(creator);
+        pad.sell(token, cheld, 0);
+        (, , , , , , , uint256 realEth, , , , , , , , , ) = pad.launches(token);
+        assertLt(realEth, 10, "the curve is empty to the wei");
     }
 
     function test_graduate_only_when_full_and_only_once() public {

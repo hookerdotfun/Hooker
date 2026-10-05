@@ -17,8 +17,9 @@ const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toLocaleString(undefined, { ma
 
 function Trade({ t, refresh }) {
   const { evmAddress, sendEvm, connect } = useWallet();
-  const [side, setSide] = useState("buy");
-  const [amount, setAmount] = useState("0.02");
+  const refunding = t.status === "refunding";
+  const [side, setSide] = useState(refunding ? "sell" : "buy");
+  const [amount, setAmount] = useState(refunding ? "100" : "0.02");
   const [bal, setBal] = useState(null);
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState(null);
@@ -59,7 +60,7 @@ function Trade({ t, refresh }) {
   return (
     <section className="panel trade">
       <div className="tabs">
-        <button className={side === "buy" ? "on" : ""} onClick={() => { setSide("buy"); setAmount("0.02"); }}>Buy</button>
+        <button className={side === "buy" ? "on" : ""} disabled={refunding} onClick={() => { setSide("buy"); setAmount("0.02"); }}>Buy</button>
         <button className={side === "sell" ? "on sell" : ""} onClick={() => { setSide("sell"); setAmount("100"); }}>Sell</button>
       </div>
       {listBlocked ? (
@@ -200,6 +201,7 @@ export default function TokenRhc({ mint }) {
   if (!t) return <div className="empty" style={{ marginTop: 60 }}>Loading…</div>;
   const g = t.graduated;
   const onPons = g?.ponsToken;
+  const refunding = t.status === "refunding";
   const windowLeft = t.rules?.earlySecs ? t.createdAt + t.rules.earlySecs - Date.now() / 1000 : 0;
   const at = t.status === "trading" ? 0 : onPons ? 1 : 0.5;
   const ruleText = describeRules({ ...t.rules, dev: t.creator }, { gradSol: t.targetEth, antiSnipe: t.antiSnipe, antiSnipeStartPct: 50, fees: t.fees, chain: "rhc" });
@@ -233,7 +235,12 @@ export default function TokenRhc({ mint }) {
               <div className={at === 0 ? "now" : "done"}><b>01 Hooker</b>{at === 0.5 ? "Graduating" : "Bonding curve"}</div>
               <div className={at === 1 ? "now" : ""}><b>02 Pons</b>Pons coin</div>
             </div>
-            {g ? (
+            {refunding ? (
+              <>
+                <h3 style={{ fontSize: 22 }}>Refunding</h3>
+                <p className="muted" style={{ margin: 0 }}>The curve filled but the Pons launch could not go ahead, so it was called off. Sell your tokens back here: you get the curve's ETH, with no fee.</p>
+              </>
+            ) : g ? (
               onPons ? (
                 <>
                   <div className="grad-head"><h3>Graduated</h3></div>
@@ -270,7 +277,7 @@ export default function TokenRhc({ mint }) {
           <Trades t={t} />
         </div>
         <aside className="sticky">
-          {t.status === "trading" && <Trade t={t} refresh={load} />}
+          {(t.status === "trading" || refunding) && <Trade t={t} refresh={load} />}
           {onPons && (
             <section className="panel grad-trade">
               <a className="btn green" href={g.ponsUrl} target="_blank" rel="noreferrer">Trade on Pons <span className="arrow">→</span></a>

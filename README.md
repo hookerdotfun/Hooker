@@ -97,7 +97,7 @@ The end-to-end suites run against the **real mainnet bytecode**: Meteora's bondi
 ## On chain
 
 - Solana hook program: `GE5TW1AFehhNFLYiSiaAkmbTjnHTB3hdhw6ZZFBP5sLV`
-- Robinhood Chain launchpad: `0xc67e6bbc3c68fb02b5c1c468a42f012252c7603b`
+- Robinhood Chain launchpad: `0xbd8e608d3314240c48c8e0c85bc3da4a8b8447f8`
 
 ## Security
 

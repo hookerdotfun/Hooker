@@ -55,7 +55,7 @@ export function Feed() {
         <span>Checked<b>{rows.length}</b> &nbsp; <span className="bad">Refused<b>{refused}</b></span></span>
       </div>
       <div className="feed-rows">
-        {rows.map((r) => <Row key={r.id} r={r} />)}
+        {rows.map((r, i) => <Row key={`${r.id}:${i}`} r={r} />)}
         {data && rows.length === 0 && <div className="feed-empty">{data.tokens ? "No trades on the live tokens yet. Each one shows up here as it lands." : "No token is trading right now. Every trade on a Hooker token shows up here as it lands."}</div>}
         {!data && <div className="feed-empty">Reading the chain…</div>}
       </div>

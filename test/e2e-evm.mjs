@@ -79,7 +79,11 @@ const buyers = await Promise.all([0, 1, 2, 3, 4, 5].map(() => actor(3)));
 const q = await api("GET /api/evm/quote/:token", { params: { token }, query: new URLSearchParams({ eth: "0.05" }) });
 const t0 = await sendTx(buyers[0], await api("POST /api/evm/tx/buy", { body: { token, eth: "0.05", minTokensOut: (BigInt(q.tokens) * 95n / 100n).toString() } }));
 const bal0 = await client.readContract({ address: token, abi: TOKEN_ABI, functionName: "balanceOf", args: [buyers[0].address] });
-ok(bal0 > 0n && bal0 <= BigInt(q.tokens), `a buy through the API: ${Number(formatEther(bal0)).toLocaleString()} tokens (quoted ${Number(formatEther(BigInt(q.tokens))).toLocaleString()}, burn 1% off)`);
+ok(bal0 > 0n && bal0 === BigInt(q.tokens), `a buy through the API: ${Number(formatEther(bal0)).toLocaleString()} tokens, exactly the quote (the quote takes the 1% burn off, as the contract does)`);
+let code404 = null, code400 = null;
+try { await api("GET /api/evm/token/:token", { params: { token: "0x0000000000000000000000000000000000000001" } }); } catch (e) { code404 = e.status; }
+try { await api("GET /api/evm/quote/:token", { params: { token }, query: new URLSearchParams({ side: "sell", amount: "abc" }) }); } catch (e) { code400 = e.status; }
+ok(code404 === 404 && code400 === 400, "an unknown token is a 404 and a malformed amount a 400, not server errors");
 // too big for 5% max per wallet: the site simulates first and says why
 const big = await api("POST /api/evm/tx/buy", { body: { token, eth: "0.5" } });
 const sim = await api("POST /api/evm/simulate", { body: { from: buyers[1].address, ...big } });
@@ -140,6 +144,39 @@ ok(w.created.includes(token) && w.creatorFeesEth > 0, `the creator's launches an
 await sendTx(creator, await api("POST /api/evm/tx/claim"));
 const w2 = await api("GET /api/evm/wallet/:owner", { params: { owner: creator.address } });
 ok(w2.creatorFeesEth === 0, "claimed");
+
+// ── Pons stops taking launches: a full curve is called off by a stranger and every holder sells back, fee-free ──
+const PONS_ABI = [{ type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] }, { type: "function", name: "setLaunchEnabled", stateMutability: "nonpayable", inputs: [{ type: "bool" }], outputs: [] }, { type: "function", name: "launchEnabled", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] }];
+const ponsOwner = await client.readContract({ address: PONS_FACTORY, abi: PONS_ABI, functionName: "owner" });
+const c3 = await actor(5);
+const launch3 = await api("POST /api/evm/tx/launch", { body: { from: c3.address, name: "Refund Me", symbol: "RFND", image: "https://hooker.fun/x.png", size: 0, tier: 0, devBuyEth: "0.01", rules: {} } });
+const r3 = await sendTx(c3, launch3);
+const token3 = (await api("GET /api/evm/receipt/:hash", { params: { hash: r3.transactionHash } })).token;
+const filler = await actor(5);
+await sendTx(filler, await api("POST /api/evm/tx/buy", { body: { token: token3, eth: "3" } }));
+await test.impersonateAccount({ address: ponsOwner });
+await test.setBalance({ address: ponsOwner, value: parseEther("1") });
+await createWalletClient({ account: ponsOwner, chain: rhc(4663, URL_), transport: http(URL_) }).writeContract({ address: PONS_FACTORY, abi: PONS_ABI, functionName: "setLaunchEnabled", args: [false] });
+await test.stopImpersonatingAccount({ address: ponsOwner });
+await g.tick(); // the graduation service tries, fails, and backs off (no state change)
+cache.clear();
+let s3 = await api("GET /api/evm/token/:token", { params: { token: token3 } });
+ok(s3.status === "complete", "with Pons closed the curve stays full: nothing is lost, nothing moves");
+const stranger = await actor(1);
+const abortHash = await createWalletClient({ account: stranger, chain: rhc(4663, URL_), transport: http(URL_) }).writeContract({ address: pad, abi: LAUNCHPAD_ABI, functionName: "abort", args: [token3] });
+await client.waitForTransactionReceipt({ hash: abortHash });
+cache.clear();
+s3 = await api("GET /api/evm/token/:token", { params: { token: token3 } });
+ok(s3.status === "refunding" && s3.venue === "refunding" && s3.graduated === null, "anyone can call it off once Pons refuses launches: the API shows it refunding");
+const fb = BigInt((await api("GET /api/evm/token/:token/balance/:owner", { params: { token: token3, owner: filler.address } })).amount);
+const sq3 = await api("GET /api/evm/quote/:token", { params: { token: token3 }, query: new URLSearchParams({ side: "sell", amount: fb.toString() }) });
+const fBefore = await client.getBalance({ address: filler.address });
+await sendTx(filler, await api("POST /api/evm/tx/sell", { body: { token: token3, amount: fb.toString() } }));
+const got3 = (await client.getBalance({ address: filler.address })) - fBefore;
+ok(sq3.feeBps === 0 && got3 > parseEther("1.4") && got3 <= parseEther(sq3.eth), `the holder sold everything back with no fee: ${formatEther(got3)} ETH of the 1.47 raised (quoted ${sq3.eth})`);
+let buyRefused = null;
+try { await api("GET /api/evm/quote/:token", { params: { token: token3 }, query: new URLSearchParams({ eth: "0.1" }) }); } catch (e) { buyRefused = e.message; }
+ok(/not trading/.test(buyRefused ?? ""), "buying a refunding curve is refused");
 
 evm.stop();
 console.log(`\n${pass} passed, ${fail} failed`);

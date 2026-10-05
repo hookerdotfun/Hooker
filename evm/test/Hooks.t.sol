@@ -234,6 +234,79 @@ contract HooksTest is Test {
         assertEq(pad.platformFees(), 2 * (0.03 ether - 0.03 ether * 199 / 300));
     }
 
+    function test_social_links_are_bounded() public {
+        HookerLaunchpad.LaunchInput memory a;
+        a.name = "Hook"; a.symbol = "HOOK"; a.size = 3;
+        a.socials.website = string(new bytes(257));
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(HookerLaunchpad.Refused.selector, "a social link is too long"));
+        pad.launch(a);
+        a.socials.website = string(new bytes(256));
+        vm.prank(creator);
+        pad.launch(a);
+    }
+
+    function test_owner_can_call_off_a_full_curve_and_holders_sell_back_fee_free() public {
+        HookerToken.Rules memory r;
+        HookerToken t = _launch(r);
+        vm.prank(alice);
+        _refusedWith("not full");
+        pad.abort(address(t)); // owner, but not full yet
+        vm.prank(alice);
+        pad.buy{value: 10 ether}(address(t), 0); // fills (4.2 ETH), refunds the rest
+        pad.abort(address(t)); // the owner (this test contract); a stranger's abort is covered by the fork test (it asks Pons)
+        vm.prank(alice);
+        _refusedWith("not trading");
+        pad.buy{value: 1 ether}(address(t), 0);
+        uint256 held = t.balanceOf(alice);
+        uint256 before = alice.balance;
+        uint256 cf = pad.creatorFees(creator);
+        vm.prank(alice);
+        pad.sell(address(t), held, 0);
+        // 1% was paid on the way in and nothing on the way out
+        assertApproxEqRel(alice.balance - before, 4.2 ether, 0.001e18);
+        assertEq(pad.creatorFees(creator), cf, "no fee on the refund sells");
+    }
+
+    function test_size_fee_goes_to_the_tokens_own_treasury_even_after_setTreasury() public {
+        HookerToken.Rules memory r;
+        r.allowlist = true;
+        r.feeCapBps = 200; r.feeBaseBps = 100;
+        HookerToken t = _launch(r);
+        address[] memory w = new address[](1);
+        w[0] = alice;
+        vm.prank(creator);
+        t.addToList(w);
+        pad.setTreasury(makeAddr("treasury2"));
+        vm.prank(alice);
+        pad.buy{value: 0.1 ether}(address(t), 0); // the fee transfer to the old treasury passes the allowlist
+        assertGt(t.balanceOf(treasury), 0);
+        assertEq(t.balanceOf(makeAddr("treasury2")), 0);
+    }
+
+    function test_stray_eth_is_sweepable_and_a_dead_curves_pot_can_be_swept() public {
+        (bool ok,) = address(pad).call{value: 1 ether}("");
+        assertTrue(ok);
+        assertEq(pad.platformFees(), 1 ether);
+        HookerToken.Rules memory r;
+        r.holderShareBps = 10_000;
+        HookerToken t = _launch(r);
+        vm.prank(alice);
+        pad.buy{value: 1 ether}(address(t), 0);
+        (, , , , , , , , , uint256 pot, , , , , , , ) = pad.launches(address(t));
+        assertGt(pot, 0);
+        _refusedWith("still live");
+        pad.sweepPot(address(t));
+        vm.warp(block.timestamp + 181 days);
+        uint256 before = treasury.balance;
+        pad.sweepPot(address(t));
+        assertEq(treasury.balance - before, pot);
+    }
+
+    function _refusedWith(string memory why) internal {
+        vm.expectRevert(abi.encodeWithSelector(HookerLaunchpad.Refused.selector, why));
+    }
+
     function test_rules_validation() public {
         HookerToken.Rules memory r;
         r.allowlist = true;

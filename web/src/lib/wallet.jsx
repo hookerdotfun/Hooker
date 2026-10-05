@@ -132,6 +132,7 @@ export function WalletProvider({ children }) {
       return v;
     } catch (e) {
       setError(cancelled(e) ? "Connection was cancelled in the wallet." : e.message);
+      pending.current?.reject(e);
       throw e;
     } finally {
       pending.current = null;
@@ -157,13 +158,15 @@ export function WalletProvider({ children }) {
     if (!sameAddr(from, v.address)) throw new Error("Your wallet switched accounts. Try again.");
     const hash = await p.request({ method: "eth_sendTransaction", params: [{ from, to: tx.to, data: tx.data, value: hex(tx.value ?? 0) }] });
     onSent?.(hash);
-    for (let i = 0; i < 120; i++) {
+    // up to ten minutes: Robinhood Chain lands a transaction in seconds, but a lagging RPC must never make a
+    // launch look failed (a second attempt would mint a second token, and a Pons launch cannot be undone)
+    for (let i = 0; i < 310; i++) {
       await new Promise((r) => setTimeout(r, i < 10 ? 700 : 2000));
       const r = await fetch(`/api/evm/receipt/${hash}`).then((x) => x.json()).catch(() => null);
       if (r?.status === "success") return { hash, token: r.token };
       if (r?.status === "reverted") throw new Error(r.error);
     }
-    throw new Error("The transaction has not landed yet. Check your wallet's activity.");
+    throw new Error(`The transaction was sent but has not landed yet (${hash}). Check it on Blockscout before trying again: https://robinhoodchain.blockscout.com/tx/${hash}`);
   }, [connect]);
 
   /** Signs one base64 transaction (built by the server for `expected`) and returns it signed, base64. */

@@ -63,7 +63,7 @@ export function ago(ts) {
 }
 
 /** Where a launch trades now, in a word. */
-export const venueLabel = (l) => (l.status === "trading" ? "Bonding" : l.venue === "pons" ? "Pons" : l.venue === "PumpSwap" ? "PumpSwap" : l.venue === "pump.fun" ? "Pumpfun" : "Graduating");
+export const venueLabel = (l) => (l.status === "trading" ? "Bonding" : l.status === "refunding" ? "Refunding" : l.venue === "pons" ? "Pons" : l.venue === "PumpSwap" ? "PumpSwap" : l.venue === "pump.fun" ? "Pumpfun" : "Graduating");
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;

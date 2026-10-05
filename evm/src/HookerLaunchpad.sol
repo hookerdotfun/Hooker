@@ -59,7 +59,9 @@ contract HookerLaunchpad is ReentrancyGuard {
     uint32 public constant ANTI_SNIPE_PERIODS = 12;
     address public constant DEAD = 0x000000000000000000000000000000000000dEaD;
 
-    enum State { None, Trading, Complete, Graduated, Paid }
+    /// Refunding: the curve is full but Pons refused the launch (or the owner called it off); holders sell back
+    /// along the frozen curve, with no fee, until it is empty. Added after the first states, so their numbers hold.
+    enum State { None, Trading, Complete, Graduated, Paid, Refunding }
 
     struct Launch {
         State state;
@@ -77,7 +79,13 @@ contract HookerLaunchpad is ReentrancyGuard {
         uint256 ponsPot;    // Pons coins for holder share (by balance × time)
         uint256 circulating;// the snapshot: tokens outside the curve (holders, treasury, dead)
         uint256 paidUpTo;   // payout cursor into the token's holder list
+        uint256 potEth;     // holder share that did not fit under Pons's graduation: paid out as ETH, by weight
+        uint64 lastTrade;   // when it last traded: a curve nobody touches for a long time can be swept by the owner
     }
+    /// Pons caps each social at 256 bytes; a longer one would make the graduation revert forever.
+    uint256 public constant SOCIAL_MAX = 256;
+    /// After this long without a trade, a curve that never filled can have its holder-share pot swept.
+    uint256 public constant POT_SWEEP_AFTER = 180 days;
 
     struct Meta {
         string description;
@@ -109,6 +117,7 @@ contract HookerLaunchpad is ReentrancyGuard {
     event Graduated(address indexed token, address indexed ponsToken, uint256 ethSpent, uint256 ponsBought, uint256 ponsPot, address feeRecipient);
     event Paid(address indexed token, uint256 holdersPaid, bool done);
     event CreatorFeesClaimed(address indexed creator, uint256 amount);
+    event Aborted(address indexed token, string why);
 
     error Refused(string why);
 
@@ -120,7 +129,8 @@ contract HookerLaunchpad is ReentrancyGuard {
         tokenFactory = new HookerTokenFactory();
     }
 
-    receive() external payable {}
+    /// ETH sent straight here (nothing of ours does) is not stranded: it counts as platform fees and can be swept.
+    receive() external payable { platformFees += msg.value; }
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Refused("only the owner");
@@ -147,6 +157,8 @@ contract HookerLaunchpad is ReentrancyGuard {
         if (a.size >= 4 || a.tier >= 4) revert Refused("size or fee step");
         if (bytes(a.name).length == 0 || bytes(a.name).length > 32 || bytes(a.symbol).length == 0 || bytes(a.symbol).length > 10) revert Refused("name or ticker length");
         if (bytes(a.image).length > 512 || bytes(a.description).length > 2048) revert Refused("image or description too long");
+        if (bytes(a.socials.twitter).length > SOCIAL_MAX || bytes(a.socials.telegram).length > SOCIAL_MAX || bytes(a.socials.discord).length > SOCIAL_MAX
+            || bytes(a.socials.website).length > SOCIAL_MAX || bytes(a.socials.farcaster).length > SOCIAL_MAX) revert Refused("a social link is too long");
         validateRules(a.rules);
 
         token = tokenFactory.create(a.name, a.symbol, a.image, supply, msg.sender, treasury, a.rules);
@@ -159,6 +171,7 @@ contract HookerLaunchpad is ReentrancyGuard {
         l.vEth = virtualEth;
         l.vTokens = supply;
         l.gradEth = ponsGraduationEth * sizeBps[a.size] / 10_000;
+        l.lastTrade = uint64(block.timestamp);
         _meta[token] = Meta(a.description, a.socials);
         tokens.push(token);
         emit Launched(token, msg.sender, a.name, a.symbol, a.image, a.size, a.tier, a.antiSnipe, l.gradEth);
@@ -207,17 +220,18 @@ contract HookerLaunchpad is ReentrancyGuard {
 
     function sell(address token, uint256 amount, uint256 minEthOut) external nonReentrant returns (uint256 ethOut) {
         Launch storage l = launches[token];
-        if (l.state != State.Trading) revert Refused("not trading");
+        if (l.state != State.Trading && l.state != State.Refunding) revert Refused("not trading");
         if (amount == 0) revert Refused("nothing to sell");
         uint256 gross = l.vEth - Math.mulDiv(l.vEth, l.vTokens, l.vTokens + amount, Math.Rounding.Ceil);
         if (gross > l.realEth) gross = l.realEth;
-        uint256 fee = gross * currentFeeBps(token) / 10_000;
+        uint256 fee = l.state == State.Refunding ? 0 : gross * currentFeeBps(token) / 10_000;
         ethOut = gross - fee;
         if (ethOut < minEthOut) revert Refused("slippage");
         HookerToken(token).pull(msg.sender, amount);
         l.vEth -= gross;
         l.vTokens += amount;
         l.realEth -= gross;
+        l.lastTrade = uint64(block.timestamp);
         _takeFee(token, l, fee);
         emit Trade(token, msg.sender, false, ethOut, amount, fee, l.vEth, l.vTokens, l.realEth);
         _send(msg.sender, ethOut);
@@ -241,6 +255,7 @@ contract HookerLaunchpad is ReentrancyGuard {
         l.vEth += net;
         l.vTokens -= out;
         l.realEth += net;
+        l.lastTrade = uint64(block.timestamp);
         _takeFee(token, l, fee);
 
         // dynamic fee and auto burn, in tokens, on every buy (the Solana side settles these at graduation)
@@ -255,7 +270,7 @@ contract HookerLaunchpad is ReentrancyGuard {
         received = out - feeTok - burnTok;
         if (received < minTokensOut) revert Refused("slippage");
         IERC20(token).safeTransfer(buyer, received);
-        if (feeTok > 0) IERC20(token).safeTransfer(treasury, feeTok);
+        if (feeTok > 0) IERC20(token).safeTransfer(HookerToken(token).treasury(), feeTok);
         if (burnTok > 0) IERC20(token).safeTransfer(DEAD, burnTok);
         emit Trade(token, buyer, true, net + fee, out, fee, l.vEth, l.vTokens, l.realEth);
 
@@ -288,12 +303,15 @@ contract HookerLaunchpad is ReentrancyGuard {
         t.freeze();
 
         uint256 launchFee = pons.launchFee();
+        if (launchFee >= l.realEth) revert Refused("Pons launch fee above the raise");
         uint256 base = l.realEth - launchFee;
         uint256 pot = l.pot;
-        // stay under Pons's own graduation: a buy that crossed it would leave the coin between phases
+        // stay under Pons's own graduation: a buy that crossed it would leave the coin between phases. Base ETH that
+        // does not fit goes to the platform (it only happens if Pons shrinks its curve); holder share that does not
+        // fit is paid to holders as ETH at payout.
         uint256 maxIn = Math.mulDiv(ponsGraduationEth, 10_000, 10_000 - 100) - 1;
         if (base > maxIn) { platformFees += base - maxIn; base = maxIn; }
-        if (base + pot > maxIn) { platformFees += base + pot - maxIn; pot = maxIn - base; }
+        if (base + pot > maxIn) { l.potEth = base + pot - maxIn; pot = maxIn - base; }
         uint256 quoteIn = base + pot;
 
         bool toHolders = t.rules().holderRewards;
@@ -341,14 +359,43 @@ contract HookerLaunchpad is ReentrancyGuard {
         if (b > bought) b = bought;
     }
 
+    /// Calls a full curve off: holders sell back, fee-free, along the frozen curve. The owner may do it any time
+    /// (a launch Pons would refuse, say a social link it rejects); anyone may once Pons has stopped taking launches,
+    /// so nobody's ETH depends on the owner being around.
+    function abort(address token) external nonReentrant {
+        Launch storage l = launches[token];
+        if (l.state != State.Complete) revert Refused("not full");
+        string memory why = "called off by the owner";
+        if (msg.sender != owner) {
+            if (pons.launchEnabled()) revert Refused("Pons still takes launches: only the owner can call it off");
+            why = "Pons stopped taking launches";
+        }
+        l.state = State.Refunding;
+        emit Aborted(token, why);
+    }
+
+    /// A curve that never filled and has not traded for POT_SWEEP_AFTER: its holder-share pot goes to the treasury.
+    function sweepPot(address token) external onlyOwner nonReentrant {
+        Launch storage l = launches[token];
+        if (l.state != State.Trading || block.timestamp < l.lastTrade + POT_SWEEP_AFTER) revert Refused("still live");
+        uint256 p = l.pot;
+        l.pot = 0;
+        _send(treasury, p);
+    }
+
     /// The holder's Pons coins: snapshot balance share of the base, plus balance × time share of the pot.
     function allocationOf(address token, address holder) public view returns (uint256) {
         Launch storage l = launches[token];
         HookerToken t = HookerToken(token);
-        uint256 a = Math.mulDiv(l.ponsBase, t.balanceOf(holder), l.circulating);
+        return Math.mulDiv(l.ponsBase, t.balanceOf(holder), l.circulating) + _potShare(l, t, holder, l.ponsPot);
+    }
+
+    /// A holder's part of a pot: by balance × time held, or by balance alone when no time has passed at all
+    /// (a curve that filled in the second it launched), so a pot is never left without an owner.
+    function _potShare(Launch storage l, HookerToken t, address holder, uint256 pot) internal view returns (uint256) {
+        if (pot == 0) return 0;
         uint256 w = t.totalWeight();
-        if (l.ponsPot > 0 && w > 0) a += Math.mulDiv(l.ponsPot, t.weightOf(holder), w);
-        return a;
+        return w > 0 ? Math.mulDiv(pot, t.weightOf(holder), w) : Math.mulDiv(pot, t.balanceOf(holder), l.circulating);
     }
 
     /// Sends every holder their coins, `max` holders per call (anyone may call it). The last call sends the
@@ -366,6 +413,9 @@ contract HookerLaunchpad is ReentrancyGuard {
             address h = t.holders(i);
             uint256 a = allocationOf(token, h);
             if (a > 0) coin.safeTransfer(h, a);
+            // the holder share that did not fit under Pons's graduation, as ETH; a wallet that refuses ETH forfeits it
+            uint256 e = _potShare(l, t, h, l.potEth);
+            if (e > 0) { (bool ok,) = h.call{value: e, gas: 50_000}(""); if (!ok) platformFees += e; }
         }
         l.paidUpTo = end;
         done = end == n;
