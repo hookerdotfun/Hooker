@@ -10,6 +10,7 @@ import {IPonsV2Factory} from "../src/IPonsV2.sol";
 /// numbers as the Solana hook). Graduation needs the real Pons contracts: test/LaunchpadFork.t.sol.
 contract HooksTest is Test {
     HookerLaunchpad pad;
+    address constant QUOTE = address(0);
     address treasury = makeAddr("treasury");
     address creator = makeAddr("creator");
     address alice = makeAddr("alice");
@@ -20,7 +21,7 @@ contract HooksTest is Test {
 
     function setUp() public {
         vm.warp(T0); // Thu 9 Oct 2025 08:53 UTC
-        pad = new HookerLaunchpad(address(this), treasury, makeAddr("burnside"), address(0), IPonsV2Factory(address(0xBEEF)), IPonsDistributorFactory(address(0xBEEF)));
+        pad = new HookerLaunchpad(address(this), treasury, makeAddr("burnside"), IPonsV2Factory(address(0xBEEF)), IPonsDistributorFactory(address(0xBEEF)));
         vm.deal(creator, 100 ether);
         vm.deal(alice, 100 ether);
         vm.deal(bob, 100 ether);
@@ -220,18 +221,18 @@ contract HooksTest is Test {
         vm.prank(creator);
         address t = pad.launch{value: 1 ether}(a);
         // the dev buy pays the step's fee, not the anti-snipe fee
-        assertEq(pad.creatorFees(creator), 1 ether * 199 / 10_000);
+        assertEq(pad.creatorFees(creator, QUOTE), 1 ether * 199 / 10_000);
         assertEq(pad.currentFeeBps(t), 5_000);
         vm.warp(T0 + 60);
         assertEq(pad.currentFeeBps(t), 5_000 - (5_000 - 300) * 6 / 12);
         vm.warp(T0 + 120);
         assertEq(pad.currentFeeBps(t), 300);
-        uint256 c0 = pad.creatorFees(creator);
+        uint256 c0 = pad.creatorFees(creator, QUOTE);
         vm.prank(alice);
         pad.buy{value: 1 ether}(t, 1 ether, 0);
-        assertEq(pad.creatorFees(creator) - c0, 0.03 ether * 199 / 300);
+        assertEq(pad.creatorFees(creator, QUOTE) - c0, 0.03 ether * 199 / 300);
         // the platform keeps the rest of both 3% fees (dev buy and alice's)
-        assertEq(pad.platformFees(), 2 * (0.03 ether - 0.03 ether * 199 / 300));
+        assertEq(pad.platformFees(QUOTE), 2 * (0.03 ether - 0.03 ether * 199 / 300));
     }
 
     function test_social_links_are_bounded() public {
@@ -260,12 +261,12 @@ contract HooksTest is Test {
         pad.buy{value: 1 ether}(address(t), 1 ether, 0);
         uint256 held = t.balanceOf(alice);
         uint256 before = alice.balance;
-        uint256 cf = pad.creatorFees(creator);
+        uint256 cf = pad.creatorFees(creator, QUOTE);
         vm.prank(alice);
         pad.sell(address(t), held, 0);
         // 1% was paid on the way in and nothing on the way out
         assertApproxEqRel(alice.balance - before, 4.2 ether, 0.001e18);
-        assertEq(pad.creatorFees(creator), cf, "no fee on the refund sells");
+        assertEq(pad.creatorFees(creator, QUOTE), cf, "no fee on the refund sells");
     }
 
     function test_size_fee_goes_to_the_tokens_own_treasury_even_after_setTreasury() public {
@@ -287,13 +288,13 @@ contract HooksTest is Test {
     function test_stray_eth_is_sweepable_and_a_dead_curves_pot_can_be_swept() public {
         (bool ok,) = address(pad).call{value: 1 ether}("");
         assertTrue(ok);
-        assertEq(pad.platformFees(), 1 ether);
+        assertEq(pad.platformFees(QUOTE), 1 ether);
         HookerToken.Rules memory r;
         r.holderShareBps = 10_000;
         HookerToken t = _launch(r);
         vm.prank(alice);
         pad.buy{value: 1 ether}(address(t), 1 ether, 0);
-        (, , , , , , , , , uint256 pot, , , , , , , , ) = pad.launches(address(t));
+        (, , , , , , , , , uint256 pot, , , , , , , , , , , ) = pad.launches(address(t));
         assertGt(pot, 0);
         _refusedWith("still live");
         pad.sweepPot(address(t));

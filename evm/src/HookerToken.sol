@@ -251,6 +251,28 @@ contract HookerToken is ERC20 {
 contract HookerTokenFactory {
     address public immutable launchpad = msg.sender;
 
+    /// Mirrors validateRules in lib/rules.mjs (the Solana hook's `validate`), minus the Solana-only rules.
+    error Refused(string why);
+    function validateRules(HookerToken.Rules calldata r) external pure {
+        if (r.maxWalletBps != 0 && (r.maxWalletBps < 10 || r.maxWalletBps > 10_000)) revert Refused("max per wallet");
+        if (r.earlySecs > 86_400) revert Refused("launch window");
+        if (r.earlySecs > 0 && (r.earlyMaxWalletBps < 10 || r.earlyMaxWalletBps > 10_000)) revert Refused("launch-window cap");
+        if (r.earlySecs == 0 && r.earlyMaxWalletBps != 0) revert Refused("cap without a window");
+        if (r.feeCapBps > 2_000 || r.feeBaseBps > r.feeCapBps || (r.feePerEthBps > 0 && r.feeCapBps == 0)) revert Refused("dynamic fee");
+        if (r.burnBps > 2_000 || uint256(r.feeCapBps) + r.burnBps > 3_000) revert Refused("burn");
+        if (r.holderShareBps > 10_000) revert Refused("holder share");
+        if (r.allowlist && r.blocklist) revert Refused("allowlist and blocklist");
+        if (r.tradeGuardBps != 0 && (r.tradeGuardBps < 10 || r.tradeGuardBps > 10_000)) revert Refused("trade guard");
+        if (r.rampSecs > 0) {
+            if (r.rampSecs > 7 days || r.maxWalletBps == 0 || r.rampStartBps < 10 || r.rampStartBps >= r.maxWalletBps) revert Refused("rising max per wallet");
+        } else if (r.rampStartBps != 0) revert Refused("ramp start without a ramp");
+        if (r.hoursOn) {
+            if (r.hoursDays == 0 || r.hoursDays > 127 || r.hoursOpenMin > 1_439 || r.hoursCloseMin > 1_439 || r.hoursOpenMin == r.hoursCloseMin || r.tzOffsetMin < -720 || r.tzOffsetMin > 840) revert Refused("trading hours");
+        } else if (r.hoursDays != 0 || r.hoursOpenMin != 0 || r.hoursCloseMin != 0 || r.tzOffsetMin != 0) revert Refused("hours without the rule");
+        if (r.bundleMax > 20) revert Refused("anti-bundle");
+    }
+
+
     function create(string calldata name_, string calldata symbol_, string calldata image_, uint256 supply, address dev_, address treasury_, HookerToken.Rules calldata r)
         external
         returns (address)

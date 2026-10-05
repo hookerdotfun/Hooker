@@ -50,7 +50,7 @@ const sendTx = async (a, t) => {
 console.log("Robinhood Chain e2e (fork of live RHC, the real Pons V2)");
 const deployer = await actor(1), owner = await actor(0), treasury = await actor(0), graduatorKey = generatePrivateKey();
 await test.setBalance({ address: privateKeyToAccount(graduatorKey).address, value: parseEther("1") });
-const hash = await walletOf(deployer).sendTransaction({ data: encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [owner.address, treasury.address, privateKeyToAccount(graduatorKey).address, "0x0000000000000000000000000000000000000000", PONS_FACTORY, PONS_DISTRIBUTORS] }) });
+const hash = await walletOf(deployer).sendTransaction({ data: encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [owner.address, treasury.address, privateKeyToAccount(graduatorKey).address, PONS_FACTORY, PONS_DISTRIBUTORS] }) });
 const pad = (await client.waitForTransactionReceipt({ hash })).contractAddress;
 const deployBlock = await client.getBlockNumber();
 ok(!!pad, `launchpad deployed at ${pad}`);
@@ -61,7 +61,17 @@ const cached = async (k, ms, fn) => { const c = cache.get(k); if (c && Date.now(
 const env = { rpcUrl: URL_, callRpcUrl: URL_, chainId: 4663, launchpad: pad, deployBlock, explorer: "https://robinhoodchain.blockscout.com" };
 const evm = createEvm({ cached, ethUsd: async () => 2700, env, client, logClient: client, log: () => {} });
 const api = (route, args = {}) => evm.routes[route]({ params: {}, query: new URLSearchParams(), body: {}, ...args });
+// ⛔ a fork goes stale once its block ages out of the RPC's state ("historical state is not available"), and only accounts
+// touched before that are cached: every Pons contract the flows need is read once now, and the run is split in two parts
+// (`E2E_PART=eth` | `pairs`, default both) so each fork stays young.
+const PART = process.env.E2E_PART ?? "both";
+for (const a of ["0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e", "0xe33E9E479dF8802cb0866d5d05258bEc4cF62948", "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044", "0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e",
+  "0x42df2a798f82289E177311362e8f5ccC45c1219c", "0x267444D099b10fB5Ed7c3Cc7B7c767AdcA574952", "0x3711ceA4feaDE896C913C68F01Eda97Cb06D1A42", "0xC7819B64A1dAECD7eC19856d026cb14EfBd89046",
+  "0xf5695117b99B6f6401e67d4195BD653628176C6C", "0x70e95CC5f03DB2906081E7a8D16e4C4209291507", "0x8366a39CC670B4001A1121B8F6A443A643e40951", "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"]) await client.getCode({ address: a }).catch(() => {});
+const g = createEvmGraduator({ env, key: graduatorKey, client, timeout: 180_000, log: (m) => console.log(`    ${m}`) });
+const settle = async (tok) => { for (let i = 0; i < 6; i++) { await g.tick(); cache.clear(); const st = (await api("GET /api/evm/token/:token", { params: { token: tok } })).status; if (st === "paid") return; await new Promise((r) => setTimeout(r, 5_000)); } };
 
+if (PART !== "pairs") {
 const info = await api("GET /api/evm/info");
 ok(info.sizes.length === 4 && Math.abs(info.sizes[3].eth - 4.2) < 1e-9 && info.sizes[3].ponsOwn, `sizes ${info.sizes.map((s) => s.eth).join(" / ")} ETH (the last is Pons's own)`);
 ok(info.feeTiers[0].totalPct === 1 && info.feeTiers[3].creatorPct === 2.99, "fee steps as on Solana");
@@ -119,7 +129,6 @@ let s = await api("GET /api/evm/token/:token", { params: { token } });
 ok(s.status === "complete" && s.venue === "graduating" && s.progress === 1, `full: ${s.raisedEth} ETH raised, ${s.potEth.toFixed(5)} ETH holder-share pot`);
 
 // ── the graduation service ──
-const g = createEvmGraduator({ env, key: graduatorKey, client, timeout: 180_000, log: (m) => console.log(`    ${m}`) });
 await g.tick();
 cache.clear();
 s = await api("GET /api/evm/token/:token", { params: { token } });
@@ -152,7 +161,7 @@ const launch4 = await api("POST /api/evm/tx/launch", { body: { from: c4.address,
 const r4 = await sendTx(c4, launch4);
 const token4 = (await api("GET /api/evm/receipt/:hash", { params: { hash: r4.transactionHash } })).token;
 await sendTx(await actor(5), await api("POST /api/evm/tx/buy", { body: { token: token4, eth: "3" } }));
-await g.tick();
+await settle(token4);
 cache.clear();
 const s4 = await api("GET /api/evm/token/:token", { params: { token: token4 } });
 const PONS_FACTORY_ABI2 = [{ type: "function", name: "getLaunchedToken", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "tuple", components: [{ name: "token", type: "address" }, { name: "curve", type: "address" }, { name: "deployer", type: "address" }, { name: "creatorFeeRecipient", type: "address" }] }] }, { type: "function", name: "feeEscrow", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] }];
@@ -217,12 +226,12 @@ await test.impersonateAccount({ address: ponsOwner });
 await createWalletClient({ account: ponsOwner, chain: rhc(4663, URL_), transport: http(URL_) }).writeContract({ address: PONS_FACTORY, abi: PONS_ABI, functionName: "setLaunchEnabled", args: [true] });
 await test.stopImpersonatingAccount({ address: ponsOwner });
 
+}
+if (PART !== "eth") {
 // ── a launchpad priced in USDG (a Pons pair asset): the curve takes USDG, the coin graduates paired with USDG ──
 console.log("── USDG pair launchpad");
 const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
 const ERC20 = [{ type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }] }];
-const hashU = await walletOf(deployer).sendTransaction({ data: encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [owner.address, treasury.address, privateKeyToAccount(graduatorKey).address, USDG, PONS_FACTORY, PONS_DISTRIBUTORS] }) });
-const padU = (await client.waitForTransactionReceipt({ hash: hashU })).contractAddress;
 // USDG for the test wallets: its balance mapping's storage slot is found by probing (anvil lets us write storage)
 const { keccak256, encodeAbiParameters, toHex, pad: padHex } = await import("viem");
 let usdgSlot = null;
@@ -234,13 +243,12 @@ for (let slot = 0; slot < 40 && usdgSlot === null; slot++) {
 }
 ok(usdgSlot !== null, `found USDG's balance slot (${usdgSlot}) on the fork`);
 const giveUsdg = async (who, amount) => test.setStorageAt({ address: USDG, index: keccak256(encodeAbiParameters([{ type: "address" }, { type: "uint256" }], [who, BigInt(usdgSlot)])), value: padHex(toHex(amount), { size: 32 }) });
-// the API sees both launchpads
-const envU = { ...env, pairLaunchpads: [{ address: padU, deployBlock: await client.getBlockNumber() }] };
-const evm2 = createEvm({ cached: (k, ms, fn) => cached("u:" + k, ms, fn), ethUsd: async () => 2700, env: envU, client, logClient: client, log: () => {} });
-const api2 = (route, args = {}) => evm2.routes[route]({ params: {}, query: new URLSearchParams(), body: {}, ...args });
-const infoU = await api2("GET /api/evm/info");
+const api2 = api;
+const infoU = await api("GET /api/evm/info");
 const usdgPair = infoU.pairs.find((p) => p.symbol === "USDG");
-ok(usdgPair && usdgPair.decimals === 6 && Math.abs(usdgPair.sizes[3].eth - 8090) < 1e-6 && usdgPair.bridgeable, `the API lists the USDG pair: sizes ${usdgPair?.sizes.map((x) => x.eth).join(" / ")} USDG, bridgeable to the burn`);
+ok(infoU.pairs.length > 40 && infoU.pairs[0].symbol === "ETH" && usdgPair && usdgPair.decimals === 6 && Math.abs(usdgPair.sizes[3].eth - 8090) < 1e-6 && usdgPair.bridgeable, `the API lists ${infoU.pairs.length} pair assets approved by Pons; USDG sizes ${usdgPair?.sizes.map((x) => x.eth).join(" / ")} USDG, bridgeable to the burn`);
+const priced = infoU.pairs.filter((p) => p.usd != null);
+ok(priced.length > 10 && priced.some((p) => p.symbol === "AAPL" && p.usd > 50 && p.usd < 1000), `${priced.length} assets priced from their USDG pools on chain (AAPL $${priced.find((p) => p.symbol === "AAPL")?.usd?.toFixed(2)})`);
 const cU = await actor(2); await giveUsdg(cU.address, 5_000_000_000n); // 5,000 USDG
 let needsApprove = null;
 try { await api2("POST /api/evm/tx/launch", { body: { from: cU.address, quote: "USDG", name: "Dollar Hook", symbol: "DHOOK", image: "https://hooker.fun/x.png", size: 0, tier: 1, devBuyEth: "100", rules: {} } }); } catch (e) { needsApprove = e.message; }
@@ -265,10 +273,7 @@ for (let i = 0; i < 6; i++) {
 cache.clear();
 sU = await api2("GET /api/evm/token/:token", { params: { token: tokenU } });
 ok(sU.status === "complete", `the USDG curve filled: ${sU.raised} USDG raised`);
-process.env.EVM_PAIR_LAUNCHPADS = `${padU}@${envU.pairLaunchpads[0].deployBlock}`;
-const { createEvmGraduator: mkG } = await import("../server/evm-graduator.mjs?pairs");
-const gU = mkG({ env: envU, key: graduatorKey, client, timeout: 180_000, log: (m) => console.log(`    ${m}`) });
-await gU.tick();
+await settle(tokenU);
 cache.clear();
 sU = await api2("GET /api/evm/token/:token", { params: { token: tokenU } });
 const ltU = await client.readContract({ address: PONS_FACTORY, abi: [{ type: "function", name: "getLaunchedToken", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "tuple", components: [{ name: "token", type: "address" }, { name: "curve", type: "address" }, { name: "deployer", type: "address" }, { name: "creatorFeeRecipient", type: "address" }, { name: "pairToken", type: "address" }] }] }], functionName: "getLaunchedToken", args: [sU.graduated?.ponsToken ?? "0x0000000000000000000000000000000000000001"] }).catch(() => null);
@@ -277,8 +282,7 @@ const wU = await api2("GET /api/evm/wallet/:owner", { params: { owner: cU.addres
 ok(wU.creatorFees.some((f) => f.symbol === "USDG" && f.amount > 0), `the creator's fees are waiting in USDG (${wU.creatorFees.find((f) => f.symbol === "USDG")?.amount})`);
 await sendTx(cU, await api2("POST /api/evm/tx/claim", { body: { quote: "USDG" } }));
 ok((await api2("GET /api/evm/wallet/:owner", { params: { owner: cU.address } })).creatorFees.length === 0, "claimed in USDG");
-evm2.stop();
-
+}
 evm.stop();
 console.log(`\n${pass} passed, ${fail} failed`);
 cleanup();

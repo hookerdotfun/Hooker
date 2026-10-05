@@ -50,6 +50,8 @@ interface IPonsV2Factory {
     /// Paid on every launch, in native ETH, on top of the buy.
     function launchFee() external view returns (uint256);
     function launchEnabled() external view returns (bool);
+    /// Whether an ERC-20 may be a launch's pair asset. ⚠ Returns false for address(0) although ETH launches work.
+    function approvedPairTokens(address pairToken) external view returns (bool);
     function getLaunchedToken(address token) external view returns (LaunchedToken memory);
     /// For a pair asset (address(0) = native ETH): the curve's phantom quote, where it graduates, decimals.
     function pairTokenEconomics(address pairToken) external view returns (uint256 phantomQuote, uint256 graduationThreshold, uint8 decimals);

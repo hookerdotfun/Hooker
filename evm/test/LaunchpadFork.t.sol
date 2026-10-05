@@ -30,6 +30,7 @@ contract LaunchpadForkTest is Test {
     address constant DEAD = 0x000000000000000000000000000000000000dEaD;
 
     HookerLaunchpad pad;
+    address constant QUOTE = address(0);
     address owner = makeAddr("hk-owner");
     address treasury = makeAddr("hk-treasury");
     address creator = makeAddr("hk-creator");
@@ -40,7 +41,7 @@ contract LaunchpadForkTest is Test {
         string memory url = vm.envOr("RHC_RPC_URL", string(""));
         if (bytes(url).length == 0) { vm.skip(true); return; }
         vm.createSelectFork(url);
-        pad = new HookerLaunchpad(owner, treasury, burnSide, address(0), PONS, DIST);
+        pad = new HookerLaunchpad(owner, treasury, burnSide, PONS, DIST);
         vm.deal(creator, 10 ether);
         for (uint256 i; i < buyers.length; i++) {
             buyers[i] = makeAddr(string(abi.encodePacked("hk-buyer", vm.toString(i))));
@@ -70,7 +71,7 @@ contract LaunchpadForkTest is Test {
         address token = pad.launch{value: 0.05 ether}(_input(0, true, r));
         HookerToken t = HookerToken(token);
         assertGt(t.balanceOf(creator), 0, "dev buy landed");
-        (, , , , , , , , uint256 gradEth, , , , , , , , , ) = pad.launches(token);
+        (, , , , , , , , uint256 gradEth, , , , , , , , , , , , ) = pad.launches(token);
         assertEq(gradEth, 1.47 ether, "35% of Pons's 4.2 ETH");
 
         // the anti-snipe fee: 50% at launch, the step's 1.75% after two minutes
@@ -102,7 +103,7 @@ contract LaunchpadForkTest is Test {
         uint256 before = buyers[3].balance;
         vm.prank(buyers[3]);
         pad.buy{value: 2 ether}(token, 2 ether, 0);
-        (HookerLaunchpad.State st, , , , , , , uint256 realEth, , uint256 pot, , , , , , , , ) = pad.launches(token);
+        (HookerLaunchpad.State st, , , , , , , uint256 realEth, , uint256 pot, , , , , , , , , , , ) = pad.launches(token);
         assertEq(uint8(st), uint8(HookerLaunchpad.State.Complete), "full");
         assertEq(realEth, 1.47 ether);
         assertLt(before - buyers[3].balance, 2 ether, "refunded the excess");
@@ -112,7 +113,7 @@ contract LaunchpadForkTest is Test {
         pad.buy{value: 0.1 ether}(token, 0.1 ether, 0);
 
         // our price at the end, to compare with Pons's after graduation
-        (, , , , , uint256 vEth, uint256 vTok, , , , , , , , , , , ) = pad.launches(token);
+        (, , , , , uint256 vEth, uint256 vTok, , , , , , , , , , , , , , ) = pad.launches(token);
         uint256 ourPrice = vEth * 1e18 / vTok;
 
         // graduate: the real Pons V2 launch + buy, one transaction
@@ -164,11 +165,11 @@ contract LaunchpadForkTest is Test {
         assertGt(ethBack, 0, "sold on Pons");
 
         // fees: the creator claims ETH, the platform sweeps
-        uint256 cf = pad.creatorFees(creator);
+        uint256 cf = pad.creatorFees(creator, QUOTE);
         assertGt(cf, 0);
         vm.prank(creator);
-        pad.claimCreatorFees();
-        pad.sweepPlatformFees();
+        pad.claimCreatorFees(QUOTE);
+        pad.sweepPlatformFees(QUOTE);
         assertGt(treasury.balance, 0);
         emit log_named_uint("payout calls", calls + 1);
     }
@@ -183,7 +184,7 @@ contract LaunchpadForkTest is Test {
         address token = pad.launch{value: 0.1 ether}(a);
         // fill the full 4.2 ETH size
         for (uint256 i; i < 6; i++) {
-            (HookerLaunchpad.State st, , , , , , , , , , , , , , , , , ) = pad.launches(token);
+            (HookerLaunchpad.State st, , , , , , , , , , , , , , , , , , , , ) = pad.launches(token);
             if (st != HookerLaunchpad.State.Trading) break;
             vm.prank(buyers[i]);
             pad.buy{value: 1 ether}(token, 1 ether, 0);
@@ -192,7 +193,7 @@ contract LaunchpadForkTest is Test {
         address coin = pad.graduate(token);
         IPonsV2Factory.LaunchedToken memory lt = PONS.getLaunchedToken(coin);
         assertEq(lt.phase, 0, "the full size stays under Pons's own graduation");
-        (, , , , , , , , , , , , , , , uint256 potEth, , ) = pad.launches(token);
+        (, , , , , , , , , , , , , , , uint256 potEth, , , , , ) = pad.launches(token);
         assertGt(potEth, 0, "a full-size curve's holder share does not all fit under Pons's cap");
         address d = DIST.distributorOf(coin);
         assertTrue(d != address(0), "a Pons distributor");
@@ -229,7 +230,7 @@ contract LaunchpadForkTest is Test {
         uint256 cheld = HookerToken(token).balanceOf(creator);
         vm.prank(creator);
         pad.sell(token, cheld, 0);
-        (, , , , , , , uint256 realEth, , , , , , , , , , ) = pad.launches(token);
+        (, , , , , , , uint256 realEth, , , , , , , , , , , , , ) = pad.launches(token);
         assertLt(realEth, 10, "the curve is empty to the wei");
     }
 

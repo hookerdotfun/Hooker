@@ -120,12 +120,13 @@ export default function Launch() {
   // the Pons pair asset: ETH or one of Pons's pair assets, each its own launchpad with its own sizes
   const pair = evmInfo?.pairs?.find((p) => p.symbol === f.quote) ?? evmInfo?.pairs?.[0] ?? null;
   const unit = pair?.symbol ?? "ETH";
-  const quoteUsd = unit === "ETH" ? evmInfo?.ethUsd : ["USDG", "USDC", "USDT"].includes(unit) ? 1 : null;
+  const quoteUsd = pair?.usd ?? (unit === "ETH" ? evmInfo?.ethUsd : null);
   const moneyEth = (cap) => (quoteUsd ? usd(cap * quoteUsd) : amt(cap, unit, 2));
   const ponsSizes = pair?.sizes ?? evmInfo?.sizes ?? [];
   const ponsSize = ponsSizes[Number(f.ethSize)] ?? null;
   const ponsTier = (pair?.feeTiers ?? evmInfo?.feeTiers)?.[Number(f.feeTier)] ?? evmInfo?.feeTiers?.[0] ?? null;
-  const devQuick = unit === "ETH" ? ["0.01", "0.02", "0.05", "0.1"] : ["10", "25", "50", "100"];
+  // sensible first-buy amounts: about 0.5% to 5% of a full Pons graduation in that asset
+  const devQuick = unit === "ETH" ? ["0.01", "0.02", "0.05", "0.1"] : (() => { const g = pair?.ponsGraduation ?? 0; const r = (x) => String(Number((g * x).toPrecision(2))); return [r(0.003), r(0.006), r(0.012), r(0.025)]; })();
 
   const rules = useMemo(() => r && ({
     fomoOnly: r.fomoOnly, appOnly: false, venueLock: false, holderRewards: r.holderRewards,
@@ -445,15 +446,11 @@ export default function Launch() {
             {/* the pair asset: Pons's own curve for that asset, so the coin graduates paired with it, no swap in between */}
             {(evmInfo.pairs?.length ?? 0) > 1 && (
               <>
-                <span className="label" style={{ display: "block", margin: "0 0 8px" }}>Pair on Pons</span>
-                <div className="sizes">
-                  {evmInfo.pairs.map((p) => (
-                    <button type="button" key={p.symbol} className={`size ${unit === p.symbol ? "on" : ""}`} onClick={() => setF({ ...f, quote: p.symbol, devBuyEth: p.symbol === "ETH" ? "0.02" : "25" })}>
-                      <b>{p.symbol}</b><span>{p.symbol === "ETH" ? "the default" : `priced and traded in ${p.symbol}`}</span>
-                    </button>
-                  ))}
-                </div>
-                <p className="hint" style={{ margin: "8px 0 14px" }}>{unit === "ETH" ? "The Pons coin trades against ETH, like most Pons coins." : `Your curve takes ${unit}, and at graduation the Pons coin is paired with ${unit}. Buyers approve ${unit} once before buying.`}</p>
+                <Field label="Paired asset" hint={unit === "ETH" ? "The Pons coin trades against ETH, like most Pons coins." : `Your curve takes ${unit}, and at graduation the Pons coin is paired with ${unit}. Buyers approve ${unit} once before buying.${pair?.bridgeable ? "" : ` ${unit} creator fees are collected as ${unit} and converted for the burn by hand.`}`}>
+                  <select value={unit} onChange={(e) => { const p = evmInfo.pairs.find((x) => x.symbol === e.target.value); const g = p?.ponsGraduation ?? 0; setF({ ...f, quote: e.target.value, devBuyEth: e.target.value === "ETH" ? "0.02" : String(Number((g * 0.006).toPrecision(2))) }); }}>
+                    {evmInfo.pairs.map((p) => <option key={p.symbol} value={p.symbol}>{p.symbol}{p.usd == null && p.symbol !== "ETH" ? " (no price yet)" : ""}</option>)}
+                  </select>
+                </Field>
               </>
             )}
             <div className="sizes">
@@ -476,7 +473,7 @@ export default function Launch() {
               ))}
             </div>
             <Field label="Your buy at launch" hint={r?.antiSnipe ? "It is the only trade that skips the anti-snipe fee, so it has to be yours, inside the launch itself." : "It is made inside the launch itself so nobody can buy before you."}>
-              <div className="amount"><input type="number" min="0" step={unit === "ETH" ? "0.01" : "1"} value={f.devBuyEth} onChange={set("devBuyEth")} /><span>{unit}</span></div>
+              <div className="amount"><input type="number" min="0" step="any" value={f.devBuyEth} onChange={set("devBuyEth")} /><span>{unit}</span></div>
               <div className="quick">{devQuick.map((v) => <button type="button" key={v} className={f.devBuyEth === v ? "on" : ""} onClick={() => setF({ ...f, devBuyEth: v })}>{v} {unit}</button>)}</div>
             </Field>
           </Sec>

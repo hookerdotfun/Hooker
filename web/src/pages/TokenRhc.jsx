@@ -20,7 +20,7 @@ function Trade({ t, refresh }) {
   const refunding = t.status === "refunding";
   const unit = t.quote?.symbol ?? "ETH", isEth = unit === "ETH";
   const [side, setSide] = useState(refunding ? "sell" : "buy");
-  const [amount, setAmount] = useState(refunding ? "100" : isEth ? "0.02" : "25");
+  const [amount, setAmount] = useState(refunding ? "100" : isEth ? "0.02" : String(Number(((t.target ?? 0) * 0.02).toPrecision(2))));
   const [bal, setBal] = useState(null);
   const [busy, setBusy] = useState(null);
   const [msg, setMsg] = useState(null);
@@ -62,11 +62,11 @@ function Trade({ t, refresh }) {
 
   const isDev = same(evmAddress, t.creator);
   const listBlocked = side === "buy" && !isDev && bal && (t.rules?.allowlist ? !bal.listed : t.rules?.blocklist ? bal.listed : false);
-  const quick = side === "buy" ? (isEth ? ["0.01", "0.02", "0.05", "0.1"] : ["10", "25", "50", "100"]) : ["25", "50", "75", "100"];
+  const quick = side === "buy" ? (isEth ? ["0.01", "0.02", "0.05", "0.1"] : [0.01, 0.02, 0.05, 0.1].map((x) => String(Number(((t.target ?? 0) * x).toPrecision(2))))) : ["25", "50", "75", "100"];
   return (
     <section className="panel trade">
       <div className="tabs">
-        <button className={side === "buy" ? "on" : ""} disabled={refunding} onClick={() => { setSide("buy"); setAmount(isEth ? "0.02" : "25"); }}>Buy</button>
+        <button className={side === "buy" ? "on" : ""} disabled={refunding} onClick={() => { setSide("buy"); setAmount(isEth ? "0.02" : String(Number(((t.target ?? 0) * 0.02).toPrecision(2)))); }}>Buy</button>
         <button className={side === "sell" ? "on sell" : ""} onClick={() => { setSide("sell"); setAmount("100"); }}>Sell</button>
       </div>
       {listBlocked ? (
@@ -75,7 +75,7 @@ function Trade({ t, refresh }) {
         <>
           <div className="field">
             <span className="label">{side === "buy" ? "You pay" : "You sell"}{evmAddress && bal && <b className="mono" style={{ fontWeight: 400 }}>{side === "buy" ? amt(bal.quote?.balance ?? bal.eth, unit, 4) : `${fmtTokens(units(bal.amount))} $${t.symbol}`}</b>}</span>
-            <div className="amount"><input type="number" min="0" step={side === "buy" ? (isEth ? "0.01" : "1") : "5"} value={amount} onChange={(e) => setAmount(e.target.value)} /><span>{side === "buy" ? unit : "%"}</span></div>
+            <div className="amount"><input type="number" min="0" step={side === "buy" ? "any" : "5"} value={amount} onChange={(e) => setAmount(e.target.value)} /><span>{side === "buy" ? unit : "%"}</span></div>
             <div className="quick">{quick.map((v) => <button type="button" key={v} className={amount === v ? "on" : ""} onClick={() => setAmount(v)}>{side === "buy" ? `${v} ${unit}` : `${v}%`}</button>)}</div>
           </div>
           <button className={`btn big ${side === "buy" ? "green" : ""}`} disabled={!!busy} onClick={() => { go(); }}>{busy ?? (evmAddress ? (side === "buy" ? "Buy" : "Sell") : "Connect and trade")}</button>

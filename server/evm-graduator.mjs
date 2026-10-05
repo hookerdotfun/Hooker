@@ -46,9 +46,8 @@ export function readEvmKey(file) {
 export function createEvmGraduator({ env = evmEnv(), key, timeout = 60_000, client = evmClient(env.rpcUrl, env.chainId, { timeout }), wallet, log: say = log } = {}) {
   if (!env.launchpad) throw new Error("EVM_LAUNCHPAD is not set");
   const account = privateKeyToAccount(key);
-  const padAddrs = [env.launchpad, ...(env.pairLaunchpads ?? []).map((p) => p.address)];
   wallet ??= createWalletClient({ account, chain: rhc(env.chainId, env.rpcUrl), transport: http(env.rpcUrl, { fetchOptions: { headers: { "User-Agent": "Mozilla/5.0 Chrome/140.0.0.0", Accept: "application/json" } }, retryCount: 3, timeout }) });
-  let pad = env.launchpad; // the launchpad a pass is working on
+  const pad = env.launchpad;
   const read = (fn, args = []) => client.readContract({ address: pad, abi: LAUNCHPAD_ABI, functionName: fn, args });
   const failing = new Map(); // token → { n, next } back-off after a refusal
 
@@ -62,7 +61,7 @@ export function createEvmGraduator({ env = evmEnv(), key, timeout = 60_000, clie
   }
 
   async function tick() {
-    for (const a of padAddrs) { pad = a; await tickPad(); }
+    await tickPad();
     if (HEARTBEAT) {
       const out = { at: Math.floor(Date.now() / 1000), failing: [...failing].map(([token, f]) => ({ token, n: f.n, step: f.step, why: String(f.why).slice(0, 300) })) };
       writeFileSync(`${HEARTBEAT}.tmp`, JSON.stringify(out));
@@ -117,16 +116,11 @@ export function createEvmGraduator({ env = evmEnv(), key, timeout = 60_000, clie
   };
 
   /** Every 10 minutes: sweep our graduated coins' fees into Pons's escrow, claim, bridge to the burn wallet. */
+  /** Every 10 minutes: sweep our graduated coins' fees into Pons's escrow, claim them per asset, bridge to the burn wallet. */
   async function burnTick() {
     if (!BURN_WALLET) return;
-    for (const a of padAddrs) { pad = a; await burnTickPad(); }
-    await bridgeEth();
-  }
-
-  /** One launchpad: sweep its coins' fees into Pons's escrow and claim them (ETH, or the pad's pair asset). */
-  async function burnTickPad() {
     const ponsAddr = await read("pons");
-    const quote = await read("quote");
+    const quotes = new Set(["0x0000000000000000000000000000000000000000"]);
     const [escrow, hook] = await Promise.all([client.readContract({ address: ponsAddr, abi: PONS_ABI, functionName: "feeEscrow" }), client.readContract({ address: ponsAddr, abi: PONS_ABI, functionName: "memeHook" })]);
     // 1. sweeps: the fee recipient may move a coin's fees from its curve (phase 0) or its pool (phase 2) into the escrow;
     //    Pons's own operator does this too, so a refusal here is routine, not a fault
@@ -138,13 +132,20 @@ export function createEvmGraduator({ env = evmEnv(), key, timeout = 60_000, clie
       if (STATES[l[0]] !== "paid" && STATES[l[0]] !== "graduated") continue;
       const lt = await client.readContract({ address: ponsAddr, abi: PONS_ABI, functionName: "getLaunchedToken", args: [coin] });
       if (lt.creatorFeeRecipient.toLowerCase() !== account.address.toLowerCase()) continue; // "creator fees to holders": not ours
+      quotes.add(lt.pairToken.toLowerCase());
       try {
         if (lt.phase === 0) await tryWrite(lt.curve, PONS_ABI, "sweepFees", [0n]);
         else if (lt.phase === 2) await tryWrite(hook, PONS_ABI, "sweepPoolFees", [poolId(coin, lt, hook), 0n, 0n]);
       } catch {}
     }
-    // 2. claim: the escrow pays whoever calls, so this wallet must be the one named as recipient. A pair asset's fees
-    //    sit in the escrow's token ledger and are claimed as that asset, then bridged as that asset.
+    // 2. claim, per asset our coins are paired with: the escrow pays whoever calls, so this wallet must be the recipient.
+    //    A pair asset's fees sit in the escrow's token ledger and are claimed as that asset, then bridged as that asset
+    //    (ETH and USDG; an asset Relay cannot move stays here until it is converted by hand).
+    for (const quote of quotes) await claimQuote(escrow, quote);
+    await bridgeEth();
+  }
+
+  async function claimQuote(escrow, quote) {
     const isEth = quote === "0x0000000000000000000000000000000000000000";
     const owed = isEth
       ? await client.readContract({ address: escrow, abi: PONS_ABI, functionName: "balanceOf", args: [account.address] })
@@ -159,7 +160,7 @@ export function createEvmGraduator({ env = evmEnv(), key, timeout = 60_000, clie
         say(`burn: claimed ${formatUnits(owed, dec)} ${sym} of Pons creator fees${BURN_DRY ? " (dry)" : ""} ${hash}`);
       } catch (e) { say(`⚠ burn: claim failed: ${revertText(e)}`); }
     }
-    if (!isEth) await bridgeToken(quote, sym, dec);
+    if (!isEth && sym === "USDG") await bridgeToken(quote, sym, dec);
   }
 
   /** Relay: the asset on Robinhood Chain → SOL in the burn wallet, in seconds. ETH keeps a gas reserve. */
@@ -197,7 +198,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const file = process.env.EVM_KEY_FILE || new URL("../keys/evm-graduator.key", import.meta.url).pathname;
   const key = readEvmKey(file);
   const g = createEvmGraduator({ key });
-  log(`evm graduator up: ${g.account.address} on ${[evmEnv().launchpad, ...evmEnv().pairLaunchpads.map((p) => p.address)].join(", ")}${BURN_WALLET ? ` · burn side: Pons fees → ${BURN_WALLET}${BURN_DRY ? " (DRY)" : ""}` : ""}`);
+  log(`evm graduator up: ${g.account.address} on ${evmEnv().launchpad}${BURN_WALLET ? ` · burn side: Pons fees → ${BURN_WALLET}${BURN_DRY ? " (DRY)" : ""}` : ""}`);
   let lastBurn = 0;
   for (;;) {
     await g.tick().catch((e) => log("tick:", e.shortMessage ?? e.message));

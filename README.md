@@ -39,7 +39,7 @@ All hooks are off by default; a creator combines any of them.
 
 Holders can always sell back into the curve.
 
-**At launch a creator also picks** where it graduates, a graduation size (35–100% of Pumpfun's or Pons's own), and their fee per trade (default, 1%, 2% or 3%). On Pumpfun they can pick a **custom pair**: one of Pumpfun's own custom-pair tokens (BTC, ETH, PUMP, xStocks, …) with at least $1M of liquidity, with a Pumpfun creator fee of 0.01–3%. At graduation the curve's SOL is swapped into the pair through Jupiter; if the pair no longer qualifies then, the coin pairs with SOL instead.
+**At launch a creator also picks** where it graduates, a graduation size (35–100% of Pumpfun's or Pons's own), and their fee per trade (default, 1%, 2% or 3%). On Pumpfun they can pick a **custom pair**: one of Pumpfun's own custom-pair tokens (BTC, ETH, PUMP, xStocks, …) with at least $1M of liquidity, with a Pumpfun creator fee of 0.01–3%. At graduation the curve's SOL is swapped into the pair through Jupiter; if the pair no longer qualifies then, the coin pairs with SOL instead. On Pons they can pick any of Pons's **pair assets** (USDG, the xStocks, cbBTC, gold, …): the curve then takes that asset, with Pons's own numbers for it, and the coin graduates paired with it, no swap in between.
 
 ## How it is built
 
@@ -55,7 +55,8 @@ Holders can always sell back into the curve.
 | `lib/graduate.mjs` | The Solana graduation service: idempotent, ledger-first steps (every signature stored before it is sent) |
 | `lib/pairs.mjs` | Custom pairs: Pumpfun's quote-control list, liquidity and safety checks, the Jupiter swap |
 | `lib/pumpprice.mjs` | Prices a coin in every phase: Hooker curve → Pumpfun curve → PumpSwap |
-| `lib/evm.mjs` | The Robinhood Chain API: one launchpad per asset (ETH, USDG), launches, quotes, trades, and the transactions the site asks a wallet to send |
+| `lib/evm.mjs` | The Robinhood Chain API: launches (in ETH or any Pons pair asset), quotes, trades, on-chain USD prices, and the transactions the site asks a wallet to send |
+| `lib/pons-assets.mjs` | Pons's pair assets, checked against the factory before they are offered |
 | `lib/flywheel.mjs` | The burn: claims the burn wallet's creator fees, buys $HOOKER on PumpSwap and burns it |
 | `lib/lander.mjs` | Rebroadcasts a signed Solana transaction until it lands or provably cannot |
 | `lib/relay.mjs` | What the API will relay: only the transactions the site builds |
@@ -100,8 +101,7 @@ The end-to-end suites run against the **real mainnet bytecode**: Meteora's bondi
 ## On chain
 
 - Solana hook program: `GE5TW1AFehhNFLYiSiaAkmbTjnHTB3hdhw6ZZFBP5sLV`
-- Robinhood Chain launchpad (ETH): `0x376e3648c57e0e9154103f458cc1ce3f88445c19`
-- Robinhood Chain launchpad (USDG pairs): `0x2d2d03fbfca55626b78d734b5526446e58c6b527`
+- Robinhood Chain launchpad: `0xd2e757cca670c439525336f7dd1e66e052840da0`
 - Burn wallet (the creator of every graduated coin, buys and burns $HOOKER): `hookXkHBi86pLTAPxShbvXiQsAPuyDmnanfXDs38p8n`
 
 ## Security

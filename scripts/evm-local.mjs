@@ -29,7 +29,7 @@ const test = createTestClient({ chain: rhc(4663, URL_), mode: "anvil", transport
 const fresh = async (eth) => { const k = generatePrivateKey(), a = privateKeyToAccount(k); await test.setBalance({ address: a.address, value: parseEther(String(eth)) }); return { k, a }; };
 const deployer = await fresh(1), treasury = await fresh(0), grad = await fresh(5);
 const hash = await createWalletClient({ account: deployer.a, chain: rhc(4663, URL_), transport: http(URL_) }).sendTransaction({
-  data: encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [deployer.a.address, treasury.a.address, grad.a.address, "0x0000000000000000000000000000000000000000", PONS_FACTORY, PONS_DISTRIBUTORS] }),
+  data: encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [deployer.a.address, treasury.a.address, grad.a.address, PONS_FACTORY, PONS_DISTRIBUTORS] }),
 });
 const r = await client.waitForTransactionReceipt({ hash });
 const dir = new URL("../data/evm-local/", import.meta.url).pathname;
