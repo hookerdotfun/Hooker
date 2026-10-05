@@ -64,20 +64,21 @@ const api = (route, args = {}) => evm.routes[route]({ params: {}, query: new URL
 // ⛔ a fork goes stale once its block ages out of the RPC's state ("historical state is not available"), and only accounts
 // touched before that are cached: every Pons contract the flows need is read once now, and the run is split in two parts
 // (`E2E_PART=eth` | `pairs`, default both) so each fork stays young.
-const PART = process.env.E2E_PART ?? "both";
+const PART = process.env.E2E_PART ?? "both"; // eth | burn | pairs | both
+const creator = await actor(5);
 for (const a of ["0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e", "0xe33E9E479dF8802cb0866d5d05258bEc4cF62948", "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044", "0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e",
   "0x42df2a798f82289E177311362e8f5ccC45c1219c", "0x267444D099b10fB5Ed7c3Cc7B7c767AdcA574952", "0x3711ceA4feaDE896C913C68F01Eda97Cb06D1A42", "0xC7819B64A1dAECD7eC19856d026cb14EfBd89046",
   "0xf5695117b99B6f6401e67d4195BD653628176C6C", "0x70e95CC5f03DB2906081E7a8D16e4C4209291507", "0x8366a39CC670B4001A1121B8F6A443A643e40951", "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"]) await client.getCode({ address: a }).catch(() => {});
 const g = createEvmGraduator({ env, key: graduatorKey, client, timeout: 180_000, log: (m) => console.log(`    ${m}`) });
 const settle = async (tok) => { for (let i = 0; i < 6; i++) { await g.tick(); cache.clear(); const st = (await api("GET /api/evm/token/:token", { params: { token: tok } })).status; if (st === "paid") return; await new Promise((r) => setTimeout(r, 5_000)); } };
 
-if (PART !== "pairs") {
+if (PART === "eth" || PART === "both") {
 const info = await api("GET /api/evm/info");
 ok(info.sizes.length === 4 && Math.abs(info.sizes[3].eth - 4.2) < 1e-9 && info.sizes[3].ponsOwn, `sizes ${info.sizes.map((s) => s.eth).join(" / ")} ETH (the last is Pons's own)`);
 ok(info.feeTiers[0].totalPct === 1 && info.feeTiers[3].creatorPct === 2.99, "fee steps as on Solana");
 
 // ── launch with hooks: max per wallet 5%, holder share, creator fees to holders ──
-const creator = await actor(5);
+// (the creator wallet is made at the top, so every part can use it)
 const launchTx = await api("POST /api/evm/tx/launch", { body: { from: creator.address, name: "Hook RHC", symbol: "HRHC", image: "https://hooker.fun/api/img/bafkreitest", description: "e2e", website: "https://hooker.fun", size: 0, tier: 1, antiSnipe: false, devBuyEth: "0.02",
   rules: { maxWalletBps: 500, holderShareBps: 5_000, holderRewards: true, burnBps: 100 } } });
 ok(launchTx.to === pad && BigInt(launchTx.value) === parseEther("0.02"), "launch transaction built (dev buy 0.02 ETH)");
@@ -154,6 +155,14 @@ ok(dist !== "0x0000000000000000000000000000000000000000", `creator fees to holde
 await g.tick();
 ok(true, "a second pass of the graduation service is a no-op");
 
+// ── creator fees ──
+const w = await api("GET /api/evm/wallet/:owner", { params: { owner: creator.address } });
+ok(w.created.includes(token) && w.creatorFeesEth > 0, `the creator's launches and ${w.creatorFeesEth.toFixed(5)} ETH of fees waiting`);
+await sendTx(creator, await api("POST /api/evm/tx/claim"));
+const w2 = await api("GET /api/evm/wallet/:owner", { params: { owner: creator.address } });
+ok(w2.creatorFeesEth === 0, "claimed");
+}
+if (PART === "burn" || PART === "both") {
 // ── the burn side on Robinhood Chain: the graduated coin's Pons creator fees belong to the graduation wallet ──
 // (this coin chose "creator fees to holders", so its distributor got them; a second, plain coin feeds the burn)
 const c4 = await actor(5);
@@ -182,12 +191,6 @@ const burnLedger = JSON.parse(readFileSync(process.env.EVM_BURN_LEDGER, "utf8"))
 ok(owed > 0n && burnLedger.rows.some((r) => r.kind === "claim" && r.dry), `the coin's fees reached Pons's escrow for the burn side (${formatEther(owed)} ETH owed) and the keeper simulated the claim (dry)`);
 ok(burnLedger.rows.some((r) => r.kind === "bridge" && r.dry && Number(r.sol) > 0), `and quoted the bridge to the Solana burn wallet through Relay: ${burnLedger.rows.find((r) => r.kind === "bridge")?.eth} ETH → ${burnLedger.rows.find((r) => r.kind === "bridge")?.sol} SOL (dry)`);
 
-// ── creator fees ──
-const w = await api("GET /api/evm/wallet/:owner", { params: { owner: creator.address } });
-ok(w.created.includes(token) && w.creatorFeesEth > 0, `the creator's launches and ${w.creatorFeesEth.toFixed(5)} ETH of fees waiting`);
-await sendTx(creator, await api("POST /api/evm/tx/claim"));
-const w2 = await api("GET /api/evm/wallet/:owner", { params: { owner: creator.address } });
-ok(w2.creatorFeesEth === 0, "claimed");
 
 // ── Pons stops taking launches: a full curve is called off by a stranger and every holder sells back, fee-free ──
 const PONS_ABI = [{ type: "function", name: "owner", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] }, { type: "function", name: "setLaunchEnabled", stateMutability: "nonpayable", inputs: [{ type: "bool" }], outputs: [] }, { type: "function", name: "launchEnabled", stateMutability: "view", inputs: [], outputs: [{ type: "bool" }] }];
@@ -227,7 +230,7 @@ await createWalletClient({ account: ponsOwner, chain: rhc(4663, URL_), transport
 await test.stopImpersonatingAccount({ address: ponsOwner });
 
 }
-if (PART !== "eth") {
+if (PART === "pairs" || PART === "both") {
 // ── a launchpad priced in USDG (a Pons pair asset): the curve takes USDG, the coin graduates paired with USDG ──
 console.log("── USDG pair launchpad");
 const USDG = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168";
