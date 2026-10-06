@@ -28,7 +28,8 @@ import { env, connect } from "../lib/env.mjs";
 import { dbcClient, getPool, getConfig, DBC_PROGRAM, DBC_POOL_AUTHORITY, withPriority, priorityFee } from "../lib/chain.mjs";
 import { buildLaunchTx, buildSwapTx, buildListTxs } from "../lib/launch.mjs";
 import { isRelayable } from "../lib/relay.mjs";
-import { DEFAULT_RULES, decodeRules, decodeList, validateRules, hookPdas, hookErrorFromLogs, HOOK_ERRORS, LIST_MAX, LIST_OPEN_SECS, PUMPFUN_LIMITS } from "../lib/rules.mjs";
+import { DEFAULT_RULES, decodeRules, decodeList, decodeState, validateRules, hookPdas, hookErrorFromLogs, HOOK_ERRORS, LIST_MAX, LIST_OPEN_SECS, PUMPFUN_LIMITS, needsState, usesV3, kingBar, oscCapBps, KING_BPS } from "../lib/rules.mjs";
+import { kingReigns, initKings, owedFor } from "../lib/king.mjs";
 import { ECONOMICS, pumpParams, FEE_TIERS, tierSplit } from "../lib/curve.mjs";
 import { loadConfigState, feeIsFlat, startFeePct, configFor } from "../lib/configs.mjs";
 import { pumpMarketCap } from "../lib/pumpprice.mjs";
@@ -129,6 +130,27 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
     return flight;
   }
 
+  // v3 rules that remember something (lib/rules.mjs decodeState): what the token page shows live
+  initKings(db);
+  const liveOf = (mint, rules, now) => cached(`live:${mint}`, 5_000, async () => {
+    const a = await conn.getAccountInfo(hookPdas(hookProgram, mint).state, "confirmed");
+    const st = a && a.owner.equals(hookProgram) ? decodeState(a.data) : null;
+    if (!st) return null;
+    const out = {};
+    if (rules.potatoOn) out.potato = { holder: st.potato.holder, coldAt: rules.potatoColdSecs && st.potato.holder ? st.potato.since + rules.potatoColdSecs : null };
+    if (rules.pingOn) out.ping = { next: st.ping.next, freeAt: rules.pingFreeSecs && st.ping.lastTs ? st.ping.lastTs + rules.pingFreeSecs : null };
+    if (rules.chapterStartBps) {
+      const chapter = Math.min(20, Number(st.volume / BigInt(rules.chapterVolume)));
+      out.chapters = { volume: st.volume.toString(), chapter: chapter + 1, capBps: Math.min(10_000, rules.chapterStartBps * 2 ** chapter), nextAt: ((BigInt(chapter) + 1n) * BigInt(rules.chapterVolume)).toString() };
+    }
+    if (rules.oscKind) out.oscCapBps = oscCapBps(rules, st, now);
+    if (rules.kingOn) {
+      const paid = new Map(kingReigns(db, mint).map((r) => [r.reign, r.paid]));
+      out.king = { king: st.king.king, bidLamports: st.king.bidLamports.toString(), since: st.king.since, reign: st.king.reign, barLamports: kingBar(rules, st, now).toString(), cutBps: KING_BPS,
+        hall: st.reigns.map((r) => ({ reign: r.reign, king: r.king, ended: r.ended, valueLamports: r.valueLamports.toString(), owedLamports: owedFor(r.valueLamports).toString(), paidLamports: paid.get(r.reign) ?? "0" })) };
+    }
+    return out;
+  });
   const configState = (addr) => cached(`config:${addr}`, 3_600_000, () => getConfig(dbc, new PublicKey(addr)));
   const rulesOf = (mint) => cached(`rules:${mint}`, 3_600_000, async () => {
     const a = await conn.getAccountInfo(hookPdas(hookProgram, mint).cfg, "confirmed");
@@ -332,6 +354,7 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
         fomoCosigner: env.fomoCosigner.toBase58(),
         appOnly: env.appOnlyEnabled ? { program: env.pumpAppProgram.toBase58() } : null,
         fomoOnly: env.fomoOnlyEnabled,
+        v3Rules: env.v3Rules,
         economics: ECONOMICS,
         feeTiers: Object.entries(FEE_TIERS).map(([t, f]) => ({ tier: Number(t), label: f.label, ...tierSplit(Number(t)) })),
         defaults: DEFAULT_RULES,
@@ -391,7 +414,8 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
         const d = await listOf(mint);
         list = { kind: rules.allowlist ? "allow" : "block", count: d?.count ?? 0, sealed: !!d?.sealed, openUntil: rules.launchTs + LIST_OPEN_SECS };
       }
-      return { ...(await summarize(l, prog[l.pool])), meta, rules, list, chainTime, retrying: l.status !== "trading" && l.status !== "done" && !!l.error, stalled: l.status === "stalled" };
+      const live = rules && needsState(rules) ? await liveOf(mint, rules, chainTime) : rules?.oscKind ? { oscCapBps: oscCapBps(rules, null, chainTime) } : null;
+      return { ...(await summarize(l, prog[l.pool])), meta, rules, list, live, chainTime, retrying: l.status !== "trading" && l.status !== "done" && !!l.error, stalled: l.status === "stalled" };
     },
 
     /** Whether a wallet is on a token's allow- or blocklist. */
@@ -468,6 +492,7 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       if (body.rules != null && (typeof body.rules !== "object" || Array.isArray(body.rules))) throw status(400, "rules must be an object");
       const r = { ...DEFAULT_RULES, ...pick(body.rules ?? {}, Object.keys(DEFAULT_RULES)), dev: creator };
       if (r.fomoOnly) { if (!env.fomoOnlyEnabled) throw status(400, "FOMO-only is not available yet"); r.cosigner = env.fomoCosigner; }
+      if (usesV3(r) && !env.v3Rules) throw status(400, "that rule is not available on Hooker");
       if (r.appOnly) { if (!env.appOnlyEnabled) throw status(400, "app-only is not available yet: the Pump app cannot trade hooked curves"); r.app = env.pumpAppProgram; }
       const errs = validateRules(r);
       // "Curve only" is off the site (4 Oct 2026, operator): the hook still supports it, launches here cannot pick it
@@ -504,7 +529,11 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       if (pair && launchSize(built.tx) > 1232) built = await buildLaunchTx(launchArgs);
       const { tx, mint, pool } = built;
       const { blockhash } = await conn.getLatestBlockhash("confirmed");
-      if (launchSize(tx) > 1232) throw status(503, "this launch does not fit in one transaction yet: try again in a few minutes"); // the table is being made
+      if (launchSize(tx) > 1232) {
+        // with the lookup table loaded, an oversized launch is the creator's combination of rules, not a wait
+        if (await lutFor()) throw status(400, `these rules together do not fit in one Solana transaction (${launchSize(tx)} of 1,232 bytes): drop a rule or shorten the name, ticker or links`);
+        throw status(503, "this launch does not fit in one transaction yet: try again in a few minutes"); // the table is being made
+      }
       // the pair choice, for the graduation service (the same choice is in the tx's memo, for everyone else)
       if (pair) recordIntent(db, mint.publicKey.toBase58(), pair, pumpFeeBps);
       else db.prepare("DELETE FROM launch_intents WHERE mint = ?").run(mint.publicKey.toBase58());
@@ -522,6 +551,8 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       const rules = await rulesOf(mint);
       if (buy && rules?.fomoOnly) throw status(400, "this token can only be bought through FOMO");
       if (buy && rules?.appOnly) throw status(400, "this token can only be bought inside its app");
+      if (rules?.p2pOnly && !buy) throw status(400, "this token only moves wallet to wallet: nobody can sell it to the curve");
+      if (rules?.p2pOnly && buy && owner !== rules.dev) throw status(400, "this token only moves wallet to wallet: only its creator buys from the curve");
       if (!/^\d{1,20}$/.test(String(body.amount ?? ""))) throw status(400, "amount must be a whole number (lamports to buy, base units to sell)");
       const amount = BigInt(body.amount);
       if (amount <= 0n) throw status(400, "amount must be positive (lamports to buy, base units to sell)");

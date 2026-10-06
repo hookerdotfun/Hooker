@@ -46,7 +46,19 @@ const PONS_STEPS = [
 ];
 const PONS_LIST_STEP = ["Fill the list", "One approval per 500 wallets, right after the launch."];
 /** Rules that only exist on Solana: hidden when launching on Pons. */
-const SOLANA_ONLY = new Set(["fomoOnly", "snipe"]);
+const SOLANA_ONLY = new Set(["fomoOnly", "snipe", "antiDump", "sellScale", "chapters", "plague", "market", "dexOnly", "p2pOnly", "potato", "ping", "king", "breath", "momentum", "resonance", "coupled"]);
+/** The v3 rules (Solana only), all off: what switching to Pons resets. */
+const V3_UI_OFF = { dumpOn: false, gsOn: false, chOn: false, plagueOn: false, dexOnly: false, p2pOnly: false, potatoOn: false, pingOn: false, kingOn: false, osc: 0, hoursDst: 0, hoursSells: false, hoursHolidays: false };
+const OSC_IDS = ["", "breath", "momentum", "resonance", "coupled"];
+/** Picked rules with nothing to set. */
+const NO_SETTINGS = new Set(["antiSnipe", "fomoOnly", "holderRewards", "dexOnly", "p2pOnly"]);
+/** Each oscillator's starting settings: period (s), base cap (%), floor (%), swing or buy energy (%), damping (%/s), coupling (%). */
+const OSC_DEFAULTS = {
+  1: { oscPeriod: 300, oscBase: 1, oscFloor: 0.1, oscAmp: 60, oscDamp: 0, oscCoupling: 0 },
+  2: { oscPeriod: 120, oscBase: 1, oscFloor: 0.25, oscAmp: 40, oscDamp: 8, oscCoupling: 0 },
+  3: { oscPeriod: 60, oscBase: 1, oscFloor: 0.25, oscAmp: 40, oscDamp: 1, oscCoupling: 0 },
+  4: { oscPeriod: 180, oscBase: 1, oscFloor: 0.25, oscAmp: 40, oscDamp: 1, oscCoupling: 20 },
+};
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const toMin = (hm) => { const [h, m] = String(hm).split(":").map(Number); return (h || 0) * 60 + (m || 0); };
@@ -78,7 +90,9 @@ export default function Launch() {
         feeOn: d.feeCapBps > 0, feeBase: d.feeBaseBps / 100 || 0.5, feePerSol: d.feePerSolBps / 100 || 0.5, feeCap: d.feeCapBps / 100 || 5,
         burnOn: d.burnBps > 0, burn: d.burnBps / 100 || 2, share: d.holderShareBps / 100,
         allowlist: false, blocklist: false, listText: "", seal: true, tradeGuard: 0, rampStart: 0.5, rampMins: 0,
-        antiSnipe: false, venueLock: false, hoursOn: false, hoursDays: 62, hoursOpen: "09:30", hoursClose: "16:00", tz: MY_TZ, snipeMins: 0, snipeCu: 100_000, snipeTip: 0.0001, bundleMax: 0 };
+        antiSnipe: false, venueLock: false, hoursOn: false, hoursDays: 62, hoursOpen: "09:30", hoursClose: "16:00", tz: MY_TZ, snipeMins: 0, snipeCu: 100_000, snipeTip: 0.0001, bundleMax: 0,
+        ...V3_UI_OFF, dumpBuy: 1, dumpSell: 0.25, gsSmall: 1, gsFloor: 0.1, gsBag: 3, chStart: 1, chVolume: 10, plagueDose: 1,
+        potatoMin: 0.01, potatoCold: 0, pingMin: 0.01, pingFree: 10, kingMin: 0.1, kingBeat: 5, kingDecayUnit: 2, kingDecayN: 6, kingDevCan: false, ...OSC_DEFAULTS[2] };
       setR(withRule(base, picked.current, i, true));
     }).catch((e) => setErr(e.message));
     api.evmInfo().then(setEvmInfo).catch(() => {});
@@ -87,7 +101,11 @@ export default function Launch() {
   // switching to Pons turns off the rules Robinhood Chain has no counterpart for
   const pick = (p) => setPlatform(p);
   // on Pons the Solana-only rules are off, however the form got there (the picker, ?on=pons, ?rule=fomoOnly, or Solana launching paused)
-  useEffect(() => { if (pons) setR((cur) => (cur && (cur.fomoOnly || cur.snipeMins > 0) ? { ...cur, fomoOnly: false, snipeMins: 0 } : cur)); }, [pons, r]);
+  useEffect(() => {
+    if (!pons) return;
+    const v3On = (cur) => Object.entries(V3_UI_OFF).some(([k, v]) => cur[k] !== v);
+    setR((cur) => (cur && (cur.fomoOnly || cur.snipeMins > 0 || v3On(cur)) ? { ...cur, fomoOnly: false, snipeMins: 0, ...V3_UI_OFF } : cur));
+  }, [pons, r]);
 
   // arriving from the rule picker: scroll to the rules and flash the one that was picked
   useEffect(() => {
@@ -145,6 +163,19 @@ export default function Launch() {
     snipeSecs: r.snipeMins > 0 ? Math.round(r.snipeMins * 60) : 0,
     snipeMaxCuPrice: r.snipeMins > 0 ? Math.round(Number(r.snipeCu)) : 0,
     snipeMaxTip: r.snipeMins > 0 ? Math.round(Number(r.snipeTip) * 1e9) : 0,
+    // v3 (Solana): see lib/rules.mjs V3_OFF for units
+    maxBuyBps: r.dumpOn ? bpsInput(r.dumpBuy) : 0, maxSellBps: r.dumpOn ? bpsInput(r.dumpSell) : 0,
+    sellSmallBps: r.gsOn ? bpsInput(r.gsSmall) : 0, sellFloorBps: r.gsOn ? bpsInput(r.gsFloor) : 0, sellBagBps: r.gsOn ? bpsInput(r.gsBag) : 0,
+    plagueDose: r.plagueOn ? Math.round(Number(r.plagueDose) * 1e6) : 0,
+    dexOnly: r.dexOnly, p2pOnly: r.p2pOnly,
+    potatoOn: r.potatoOn, potatoMinBps: r.potatoOn ? bpsInput(r.potatoMin) : 0, potatoColdSecs: r.potatoOn ? Math.round(Number(r.potatoCold) * 60) : 0,
+    pingOn: r.pingOn, pingMinBps: r.pingOn ? bpsInput(r.pingMin) : 0, pingFreeSecs: r.pingOn ? Math.round(Number(r.pingFree) * 60) : 0,
+    chapterStartBps: r.chOn ? bpsInput(r.chStart) : 0, chapterVolume: r.chOn ? Math.round(Number(r.chVolume) * 1e12) : 0, // millions of tokens → base units
+    oscKind: r.osc, oscPeriod: r.osc ? Math.round(r.oscPeriod) : 0, oscBaseBps: r.osc ? bpsInput(r.oscBase) : 0, oscFloorBps: r.osc ? bpsInput(r.oscFloor) : 0,
+    oscAmpPct: r.osc ? Math.round(r.oscAmp) : 0, oscDampPermille: r.osc >= 2 ? Math.round(Number(r.oscDamp) * 10) : 0, oscCouplingPct: r.osc === 4 ? Math.round(r.oscCoupling) : 0,
+    kingOn: r.kingOn, kingMinLamports: r.kingOn ? Math.round(Number(r.kingMin) * 1e9) : 0, kingBeatPct: r.kingOn ? Math.round(r.kingBeat) : 0,
+    kingDecayUnit: r.kingOn ? Number(r.kingDecayUnit) : 0, kingDecayN: r.kingOn && Number(r.kingDecayUnit) ? Math.round(r.kingDecayN) : 0, kingDevCan: r.kingOn && !!r.kingDevCan,
+    hoursDst: r.hoursOn ? Number(r.hoursDst) : 0, hoursSells: r.hoursOn && !!r.hoursSells, hoursHolidays: r.hoursOn && !!r.hoursHolidays,
   }), [r]);
   const listed = useMemo(() => (r && (r.allowlist || r.blocklist) ? parseWallets(r.listText, pons ? "rhc" : "sol") : null), [r, pons]);
 
@@ -416,6 +447,13 @@ export default function Launch() {
                 </Field>
               </div>
             )}
+            {on.market && (
+              <div className="setting">
+                <span className="label" style={{ marginBottom: 8 }}>Market hours</span>
+                <p className="hint" style={{ margin: "0 0 8px" }}>Monday to Friday, 09:30 to 16:00 New York time, following daylight saving, closed on US stock market holidays.</p>
+                <label className="check"><input type="checkbox" checked={!r.hoursSells} onChange={(e) => setRule("hoursSells", !e.target.checked)} /> Sells stay open around the clock</label>
+              </div>
+            )}
             {on.hours && (
               <div className="setting">
                 <span className="label" style={{ marginBottom: 8 }}>Trading hours</span>
@@ -433,10 +471,110 @@ export default function Launch() {
                     </select>
                   </Field>
                 </div>
-                <p className="hint" style={{ margin: 0 }}>A fixed offset: it does not follow daylight saving. Closing before opening runs overnight.</p>
+                {info?.v3Rules ? (<>
+                <div className="two">
+                  <Field label="Daylight saving">
+                    <select value={r.hoursDst} onChange={(e) => setRule("hoursDst", Number(e.target.value))}>
+                      <option value={0}>None: a fixed offset</option>
+                      <option value={1}>US rules (+1 h from March to November)</option>
+                      <option value={2}>European rules (+1 h from March to October)</option>
+                    </select>
+                  </Field>
+                  <Field label="Outside the hours">
+                    <select value={r.hoursSells ? 1 : 0} onChange={(e) => setRule("hoursSells", e.target.value === "1")}>
+                      <option value={0}>Buys closed, sells stay open</option>
+                      <option value={1}>Buys and sells closed</option>
+                    </select>
+                  </Field>
+                </div>
+                <p className="hint" style={{ margin: 0 }}>Pick the time zone's standard offset; daylight saving adds the hour on chain. Closing before opening runs overnight. Sending between wallets always works.</p>
+                </>) : <p className="hint" style={{ margin: 0 }}>A fixed offset: it does not follow daylight saving. Closing before opening runs overnight.</p>}
               </div>
             )}
-            {chosen.length > 0 && !on.maxWallet && !on.window && !on.fee && !on.burn && !on.share && !on.allowlist && !on.blocklist && !on.ramp && !on.tradeGuard && !on.snipe && !on.bundle && !on.hours && (
+            {on.antiDump && (
+              <div className="setting">
+                <div className="two">
+                  <Field label="Max per buy (% of supply)" hint="0 = no cap on buys. Your launch buy is exempt."><input type="number" min="0" max="100" step="0.05" value={r.dumpBuy} onChange={(e) => setRule("dumpBuy", Number(e.target.value))} /></Field>
+                  <Field label="Max per sell (% of supply)" hint="Tighter than the buy cap for anti-dump. Your sells too."><input type="number" min="0" max="100" step="0.05" value={r.dumpSell} onChange={(e) => setRule("dumpSell", Number(e.target.value))} /></Field>
+                </div>
+              </div>
+            )}
+            {on.sellScale && (
+              <div className="setting">
+                <div className="three">
+                  <Field label="Small holders sell up to (%)"><input type="number" min="0.02" max="100" step="0.05" value={r.gsSmall} onChange={(e) => setRule("gsSmall", Number(e.target.value))} /></Field>
+                  <Field label="Biggest bags sell up to (%)"><input type="number" min="0.01" max="100" step="0.01" value={r.gsFloor} onChange={(e) => setRule("gsFloor", Number(e.target.value))} /></Field>
+                  <Field label="From a bag of (%)"><input type="number" min="0.1" max="100" step="0.5" value={r.gsBag} onChange={(e) => setRule("gsBag", Number(e.target.value))} /></Field>
+                </div>
+                <p className="hint" style={{ margin: 0 }}>Between the two, the cap shrinks evenly as the bag grows. It applies to your sells too.</p>
+              </div>
+            )}
+            {on.chapters && (
+              <div className="setting">
+                <div className="two">
+                  <Field label="Max per wallet in chapter 1 (%)"><input type="number" min="0.1" max="100" step="0.1" value={r.chStart} onChange={(e) => setRule("chStart", Number(e.target.value))} /></Field>
+                  <Field label="Volume per chapter (million tokens)" hint="The cap doubles every time this much more trades."><input type="number" min="0.001" step="1" value={r.chVolume} onChange={(e) => setRule("chVolume", Number(e.target.value))} /></Field>
+                </div>
+              </div>
+            )}
+            {on.plague && (
+              <div className="setting">
+                <Field label="Infection dose (tokens)" hint="A wallet must hold this many to buy. Send at least this much to infect someone. Your launch buy gives you the first tokens to hand out.">
+                  <input type="number" min="0.000001" step="1" value={r.plagueDose} onChange={(e) => setRule("plagueDose", Number(e.target.value))} />
+                </Field>
+              </div>
+            )}
+            {on.potato && (
+              <div className="setting">
+                <div className="two">
+                  <Field label="Smallest buy that passes it (% of supply)" hint="Smaller buys go through but do not pass the potato."><input type="number" min="0" max="1" step="0.01" value={r.potatoMin} onChange={(e) => setRule("potatoMin", Number(e.target.value))} /></Field>
+                  <Field label="Goes cold after (minutes)" hint="If nobody buys this long, the holder can sell. 0 = never."><input type="number" min="0" max="1440" step="1" value={r.potatoCold} onChange={(e) => setRule("potatoCold", Number(e.target.value))} /></Field>
+                </div>
+              </div>
+            )}
+            {on.ping && (
+              <div className="setting">
+                <div className="two">
+                  <Field label="Smallest trade that takes the turn (% of supply)" hint="Smaller trades go through on their own turn."><input type="number" min="0" max="1" step="0.01" value={r.pingMin} onChange={(e) => setRule("pingMin", Number(e.target.value))} /></Field>
+                  <Field label="Turn frees up after (minutes)" hint="If nobody takes the turn, either side can go. 0 = never."><input type="number" min="0" max="1440" step="1" value={r.pingFree} onChange={(e) => setRule("pingFree", Number(e.target.value))} /></Field>
+                </div>
+              </div>
+            )}
+            {on.king && (
+              <div className="setting">
+                <div className="two">
+                  <Field label="Smallest buy that takes the crown (SOL)"><input type="number" min="0.01" max="10" step="0.01" value={r.kingMin} onChange={(e) => setRule("kingMin", Number(e.target.value))} /></Field>
+                  <Field label="A challenger must beat the King by (%)"><input type="number" min="0" max="50" step="1" value={r.kingBeat} onChange={(e) => setRule("kingBeat", Number(e.target.value))} /></Field>
+                </div>
+                <div className="two">
+                  <Field label="The bar halves every">
+                    <select value={r.kingDecayUnit} onChange={(e) => setRule("kingDecayUnit", Number(e.target.value))}>
+                      <option value={1}>Minutes</option><option value={2}>Hours</option><option value={3}>Days</option><option value={0}>Never (it only rises)</option>
+                    </select>
+                  </Field>
+                  {Number(r.kingDecayUnit) > 0 && <Field label="How many"><input type="number" min="1" max="60" step="1" value={r.kingDecayN} onChange={(e) => setRule("kingDecayN", Number(e.target.value))} /></Field>}
+                </div>
+                <label className="check"><input type="checkbox" checked={!!r.kingDevCan} onChange={(e) => setRule("kingDevCan", e.target.checked)} /> Your own wallet can be King</label>
+                <p className="hint" style={{ margin: 0 }}>The King earns 0.3% of every trade's value while they reign, paid in SOL from Hooker's share of the fees, not yours.</p>
+              </div>
+            )}
+            {r.osc > 0 && (
+              <div className="setting">
+                <span className="label" style={{ marginBottom: 8 }}>{["", "Breathing cap", "Momentum", "Resonance", "Coupled resonator"][r.osc]}</span>
+                <div className="three">
+                  <Field label={r.osc === 1 ? "Cycle (seconds)" : r.osc === 3 ? "The beat (seconds)" : "Natural period (seconds)"}><input type="number" min={r.osc === 1 ? 30 : 20} max={r.osc === 1 ? 3600 : 1200} step="1" value={r.oscPeriod} onChange={(e) => setRule("oscPeriod", Number(e.target.value))} /></Field>
+                  <Field label="Base cap per buy (%)"><input type="number" min="0.1" max="100" step="0.1" value={r.oscBase} onChange={(e) => setRule("oscBase", Number(e.target.value))} /></Field>
+                  <Field label="Never below (%)"><input type="number" min="0.01" max="100" step="0.05" value={r.oscFloor} onChange={(e) => setRule("oscFloor", Number(e.target.value))} /></Field>
+                </div>
+                <div className="three">
+                  <Field label={r.osc === 1 ? "Swing (% of the base)" : "Buy energy (%)"}><input type="number" min={r.osc === 1 ? 10 : 5} max="100" step="1" value={r.oscAmp} onChange={(e) => setRule("oscAmp", Number(e.target.value))} /></Field>
+                  {r.osc >= 2 && <Field label="Damping (% per second)"><input type="number" min="1" max="40" step="0.5" value={r.oscDamp} onChange={(e) => setRule("oscDamp", Number(e.target.value))} /></Field>}
+                  {r.osc === 4 && <Field label="Coupling (%)"><input type="number" min="1" max="60" step="1" value={r.oscCoupling} onChange={(e) => setRule("oscCoupling", Number(e.target.value))} /></Field>}
+                </div>
+                <p className="hint" style={{ margin: 0 }}>{r.osc === 1 ? "The cap swings above and below the base on the cycle, forever." : "A buy the size of the base cap kicks the cap up by the buy energy, then it swings back and settles."} Sells and sends are never capped; your wallet is exempt.</p>
+              </div>
+            )}
+            {chosen.length > 0 && !chosen.some((x) => !NO_SETTINGS.has(x.id)) && (
               <p className="sec-lede" style={{ margin: 0 }}>The rules you picked have nothing to set.</p>
             )}
           </Sec>
@@ -566,12 +704,31 @@ function isOn(r) {
   return { antiSnipe: !!r.antiSnipe, maxWallet: r.maxWallet > 0, window: r.earlyMins > 0, fomoOnly: !!r.fomoOnly,
     fee: !!r.feeOn, burn: !!r.burnOn, share: r.share > 0, holderRewards: !!r.holderRewards,
     allowlist: !!r.allowlist, blocklist: !!r.blocklist, ramp: r.rampMins > 0, tradeGuard: r.tradeGuard > 0,
-    snipe: r.snipeMins > 0, bundle: r.bundleMax > 0, hours: !!r.hoursOn };
+    snipe: r.snipeMins > 0, bundle: r.bundleMax > 0, hours: !!r.hoursOn && !isMarket(r),
+    antiDump: !!r.dumpOn, sellScale: !!r.gsOn, chapters: !!r.chOn, plague: !!r.plagueOn, market: isMarket(r), dexOnly: !!r.dexOnly, p2pOnly: !!r.p2pOnly,
+    potato: !!r.potatoOn, ping: !!r.pingOn, king: !!r.kingOn, breath: r.osc === 1, momentum: r.osc === 2, resonance: r.osc === 3, coupled: r.osc === 4 };
 }
+/** Market hours is trading hours set like the New York stock market. */
+const isMarket = (r) => !!r.hoursOn && Number(r.tz) === -300 && Number(r.hoursDst) === 1 && !!r.hoursHolidays && r.hoursDays === 62 && r.hoursOpen === "09:30" && r.hoursClose === "16:00";
+/** Rules that cannot go together: switching one on switches these off (mirrors validateRules). */
+const CLASH = {
+  antiDump: ["tradeGuard", "sellScale"], tradeGuard: ["antiDump"], sellScale: ["antiDump"],
+  chapters: ["maxWallet", "ramp"], maxWallet: ["chapters"], ramp: ["chapters"],
+  plague: ["dexOnly", "p2pOnly"], dexOnly: ["plague", "p2pOnly"],
+  p2pOnly: ["plague", "dexOnly", "fomoOnly", "snipe", "bundle", "hours", "market", "potato", "ping", "king", "antiDump", "sellScale", "breath", "momentum", "resonance", "coupled"],
+  breath: ["momentum", "resonance", "coupled"], momentum: ["breath", "resonance", "coupled"], resonance: ["breath", "momentum", "coupled"], coupled: ["breath", "momentum", "resonance"],
+  market: ["hours"], hours: ["market"],
+};
+for (const id of ["fomoOnly", "snipe", "bundle", "potato", "ping", "king", "breath", "momentum", "resonance", "coupled"]) (CLASH[id] ??= []).push("p2pOnly");
 
 /** The rules with one switched on or off; switching on gives it a sensible starting value. */
 function withRule(r, id, info, want) {
   if (!id) return r;
+  let n = setRule1(r, id, info, want);
+  if (want) for (const other of CLASH[id] ?? []) if (isOn(n)[other]) n = setRule1(n, other, info, false);
+  return n;
+}
+function setRule1(r, id, info, want) {
   const n = { ...r };
   if (id === "maxWallet") n.maxWallet = want ? (r.maxWallet > 0 ? r.maxWallet : 3) : 0;
   if (id === "window") { n.earlyMins = want ? (r.earlyMins > 0 ? r.earlyMins : 5) : 0; if (want && !(n.earlyCap > 0)) n.earlyCap = 0.5; }
@@ -591,6 +748,22 @@ function withRule(r, id, info, want) {
   if (id === "tradeGuard") n.tradeGuard = want ? (r.tradeGuard > 0 ? r.tradeGuard : 1) : 0;
   if (id === "snipe") n.snipeMins = want ? (r.snipeMins > 0 ? r.snipeMins : 2) : 0;
   if (id === "bundle") n.bundleMax = want ? (r.bundleMax > 0 ? r.bundleMax : 2) : 0;
-  if (id === "hours") n.hoursOn = want;
+  if (id === "hours") { n.hoursOn = want; if (want) { n.hoursHolidays = false; if (isMarket(n)) n.hoursDst = 0; } }
+  if (id === "market") {
+    n.hoursOn = want;
+    if (want) Object.assign(n, { hoursDays: 62, hoursOpen: "09:30", hoursClose: "16:00", tz: -300, hoursDst: 1, hoursHolidays: true });
+    else n.hoursHolidays = false;
+  }
+  if (id === "antiDump") n.dumpOn = want;
+  if (id === "sellScale") n.gsOn = want;
+  if (id === "chapters") n.chOn = want;
+  if (id === "plague") n.plagueOn = want;
+  if (id === "dexOnly") n.dexOnly = want;
+  if (id === "p2pOnly") n.p2pOnly = want;
+  if (id === "potato") n.potatoOn = want;
+  if (id === "ping") n.pingOn = want;
+  if (id === "king") n.kingOn = want;
+  const k = OSC_IDS.indexOf(id);
+  if (k > 0) { if (want) Object.assign(n, { osc: k, ...OSC_DEFAULTS[k] }); else if (n.osc === k) n.osc = 0; }
   return n;
 }

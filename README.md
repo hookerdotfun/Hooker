@@ -33,11 +33,22 @@ All hooks are off by default; a creator combines any of them.
 | Anti-bundle | Only a few buys can land in one block |
 | Anti-snipe fee | The trading fee starts at 50% and falls to 1% over two minutes |
 | FOMO only | Only the FOMO app can buy; selling works anywhere (Solana) |
-| Trading hours | Trades only on chosen days and hours |
+| Trading hours | Trades only on chosen days and hours; on Solana it can follow US or European daylight saving on chain and close sells too |
+| Market hours | Trades like a stock: Monday to Friday, 9:30 to 16:00 New York time, closed on US market holidays (Solana) |
+| Anti-dump caps | Separate caps on one buy and one sell, the creator's sells included (Solana) |
+| Graduated sell caps | The bigger the bag, the smaller one sell can be, down to a floor (Solana) |
+| Chapters | Max per wallet starts small and doubles every chapter of volume (Solana) |
+| Plague | A wallet can only buy once a holder has sent it some (Solana) |
+| DEX-only | No wallet-to-wallet sends: every move is a trade with the curve (Solana) |
+| P2P-only | Only the creator buys from the curve and nobody sells to it; tokens move wallet to wallet (Solana) |
+| Hot potato | Whoever bought last cannot sell or send until another wallet buys (Solana) |
+| Ping pong | Buys and sells take turns; one transaction cannot take both turns (Solana) |
+| King of the Hill | The biggest buy holds the crown and earns 0.3% of every trade's value while it reigns, paid in SOL from Hooker's share of the fees (Solana) |
+| Breathing cap · Momentum · Resonance · Coupled resonator | The per-buy cap is driven by an oscillator: a fixed cycle, or one that every buy kicks (Solana) |
 | Size fee · Auto burn · Holder share | Bigger buys pay more, a share of every buy is burned, part of the fees buys extra coins for holders |
 | Creator fees to holders | After graduation, the coin's creator fees go to its holders instead of the $HOOKER burn (Pumpfun holder rewards, or Pons holder fee sharing) |
 
-Holders can always sell back into the curve.
+Unless a hook says otherwise (P2P-only, hot potato, ping pong, sell caps, hours that close sells), holders can always sell back into the curve; every hook that limits selling says so on the token's page.
 
 **At launch a creator also picks** where it graduates, a graduation size (35–100% of Pumpfun's or Pons's own), and their fee per trade (default, 1%, 2% or 3%). On Pumpfun they can pick a **custom pair**: one of Pumpfun's own custom-pair tokens (BTC, ETH, PUMP, xStocks, …) with at least $1M of liquidity, with a Pumpfun creator fee of 0.01–3%. At graduation the curve's SOL is swapped into the pair through Jupiter; if the pair no longer qualifies then, the coin pairs with SOL instead. On Pons they can pick any of Pons's **pair assets** (USDG, the xStocks, cbBTC, gold, …): the curve then takes that asset, with Pons's own numbers for it, and the coin graduates paired with it, no swap in between.
 
@@ -45,7 +56,8 @@ Holders can always sell back into the curve.
 
 | Path | What |
 |---|---|
-| `programs/hooker-hook` | The Solana transfer hook (native Rust). Per-token rules at PDA `["cfg", mint]`, lists at `["list", mint]` |
+| `programs/hooker-hook` | The Solana transfer hook (native Rust). Per-token rules at PDA `["cfg", mint]`, lists at `["list", mint]`; `src/v3.rs` holds the newer hooks, and the ones that remember something (potato, turns, volume, oscillators, the King) keep it in one account per token, `["state", mint]`, never one per buyer, so every app and router can trade them |
+| `lib/king.mjs` | King of the Hill payouts: copies each reign's traded value from chain into a ledger and pays each King, exactly once |
 | `evm/src/HookerToken.sol` | The Robinhood Chain token: the same rules in its transfer, and each holder's balance × time for holder share |
 | `evm/src/HookerLaunchpad.sol` | The Robinhood Chain curve, and its graduation: Pons V2 `launchAndBuy` in one transaction, then every holder paid on chain |
 | `lib/rules.mjs` | The rules layout, validation (mirrors the program) and refusal messages |
@@ -90,6 +102,8 @@ Tests:
 node --test test/*.test.mjs              # unit tests
 node test/e2e.mjs                        # launch → trade → graduate → every holder paid
 TEST_SIZES=2 node test/e2e-v2.mjs        # every hook, against the real programs
+TEST_SIZES=2 node test/e2e-v3.mjs        # the newer hooks (ONLY=king,ping,… runs some sections)
+(cd programs/hooker-hook && cargo test --lib)   # the hook's own tests: calendar, daylight saving, oscillators, the King's bar
 node test/api.mjs                        # the HTTP API
 TEST_SIZES=2 node test/e2e-pairs.mjs     # graduating into custom pairs (WBTC, an xStock), and the SOL fallback
 (cd evm && forge test)                   # every Robinhood Chain hook, no network

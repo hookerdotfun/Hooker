@@ -47,6 +47,8 @@ use solana_program::{
     sysvar::Sysvar,
 };
 
+mod v3;
+
 entrypoint!(process);
 
 /// sha256("spl-transfer-hook-interface:execute")[..8]
@@ -78,6 +80,8 @@ pub const CFG_LEN: usize = 128;
 pub const CFG2_LEN: usize = 256;
 /// init data tag for the compact v2 form (see `init`).
 pub const CFG_V2_COMPACT: u8 = 0x82;
+/// init data tag for the compact form with v3 rules (see `init`).
+pub const CFG_V3_COMPACT: u8 = 0x83;
 pub const FLAG_COSIGN: u8 = 1;
 pub const FLAG_APP: u8 = 2;
 pub const FLAG_VENUE_LOCK: u8 = 4;
@@ -154,7 +158,7 @@ const E_NOT_DEV: u32 = 14;
 /// | 148 |   4 | snipe_secs                                |
 /// | 152 |   8 | snipe_max_cu_price (micro-lamports / CU)  |
 /// | 160 |   8 | snipe_max_tip (lamports)                  |
-/// | 168 |  88 | reserved (zero)                           |
+/// | 168 |  88 | v3 rules (src/v3.rs)                      |
 struct Cfg {
     version: u8,
     flags: u8,
@@ -177,6 +181,8 @@ struct Cfg {
     snipe_secs: u32,
     snipe_max_cu_price: u64,
     snipe_max_tip: u64,
+    /// v3 rules (config bytes 168..256; all zero on a token launched before them)
+    ext: v3::Ext,
 }
 
 fn key_at(d: &[u8], at: usize) -> Result<Pubkey, ProgramError> {
@@ -229,6 +235,7 @@ fn read_cfg(d: &[u8]) -> Result<Cfg, ProgramError> {
         snipe_secs: if v2 { u32_at(d, 148)? } else { 0 },
         snipe_max_cu_price: if v2 { u64_at(d, 152)? } else { 0 },
         snipe_max_tip: if v2 { u64_at(d, 160)? } else { 0 },
+        ext: if v2 { v3::Ext::read(d) } else { v3::Ext::default() },
     })
 }
 
@@ -297,10 +304,15 @@ fn transferring(acct: &AccountInfo) -> Result<bool, ProgramError> {
     Ok(false)
 }
 
-/// Whether `ts` falls inside the weekly trading hours (local time = UTC + tz_offset_min).
+/// Whether `ts` falls inside the weekly trading hours (local time = UTC + tz_offset_min, plus an hour
+/// during daylight saving when the token follows it).
 fn in_hours(c: &Cfg, ts: i64) -> bool {
-    let local = ts + c.tz_offset_min as i64 * 60;
+    // v3: daylight saving moves the offset, and US market holidays close the whole local day
+    let local = ts + v3::offset_min(&c.ext, ts, c.tz_offset_min) * 60;
     let day = local.div_euclid(86_400);
+    if c.ext.f4 & v3::F4_HOLIDAYS != 0 && v3::us_market_holiday(day) {
+        return false;
+    }
     let minute = (local.rem_euclid(86_400) / 60) as u16;
     let weekday = (day + 4).rem_euclid(7) as u8; // 1970-01-01 was a Thursday; 0 = Sunday
     let open_on = |wd: u8| c.hours_days & (1 << wd) != 0;
@@ -359,9 +371,55 @@ fn execute(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Progra
     } else {
         None
     };
+    let ext = cfg.ext;
+    let state_ai = if ext.needs_state() {
+        let a = rest.next().ok_or(ProgramError::NotEnoughAccountKeys)?;
+        if *a.key != pda(b"state", mint.key, program_id).0 || a.owner != program_id || !a.is_writable {
+            return Err(ProgramError::InvalidSeeds);
+        }
+        // ⛔ only a real transfer moves the state: a direct `execute` call cannot steer it
+        if !transferring(source)? {
+            msg!("state: not inside a transfer");
+            return Err(ProgramError::InvalidAccountData);
+        }
+        Some(a)
+    } else {
+        None
+    };
+    let pool_ai = if ext.king() {
+        let a = rest.next().ok_or(ProgramError::NotEnoughAccountKeys)?;
+        v3::check_pool(a, mint.key)?;
+        Some(a)
+    } else {
+        None
+    };
 
     // token account layout: mint 0..32, owner 32..64, amount 64..72
     let dest_owner = key_at(&dest.try_borrow_data()?, 32)?;
+    let src_owner = key_at(&source.try_borrow_data()?, 32)?;
+    let clock = Clock::get()?;
+    let now = clock.unix_timestamp;
+    let supply = u64_at(&mint.try_borrow_data()?, 36)? as u128;
+    let trade = v3::Trade {
+        src_owner,
+        dest_owner,
+        is_buy: src_owner == DBC_POOL_AUTHORITY,
+        is_sell: dest_owner == DBC_POOL_AUTHORITY,
+        amount,
+        supply,
+        src_balance: u64_at(&source.try_borrow_data()?, 64)? as u128,
+        dev: cfg.dev,
+        now,
+        slot: clock.slot,
+        in_hours: cfg.flags2 & F2_HOURS == 0 || in_hours(&cfg, now),
+        tx_fp: if ext.f3 & v3::F3_PING != 0 { v3::tx_fingerprint(ixs)? } else { 0 },
+        state: state_ai,
+        pool: pool_ai,
+    };
+    if ext.any() {
+        v3::pre(&ext, &trade)?; // v3 sell-side rules and state: the dev and sells are NOT exempt
+    }
+
     if dest_owner == DBC_POOL_AUTHORITY || dest_owner == cfg.dev {
         return Ok(()); // sells into the curve, and the dev wallet, always pass
     }
@@ -384,15 +442,12 @@ fn execute(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Progra
         }
     }
 
-    let supply = u64_at(&mint.try_borrow_data()?, 36)? as u128;
     if cfg.trade_guard_bps > 0 && amount * 10_000 > supply * cfg.trade_guard_bps as u128 {
         msg!("trade guard: {} moves more than {} bps of supply", amount, cfg.trade_guard_bps);
         return refuse(E_TRADE_GUARD);
     }
 
-    let is_buy = key_at(&source.try_borrow_data()?, 32)? == DBC_POOL_AUTHORITY;
-    let clock = Clock::get()?;
-    let now = clock.unix_timestamp;
+    let is_buy = trade.is_buy;
 
     if is_buy && cfg.flags & FLAG_COSIGN != 0 {
         let n = {
@@ -495,6 +550,10 @@ fn execute(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> Progra
             return refuse(E_MAX_WALLET);
         }
     }
+    if ext.any() {
+        let held = u64_at(&dest.try_borrow_data()?, 64)? as u128;
+        v3::post(&ext, &trade, held, cfg.launch_ts)?;
+    }
     Ok(())
 }
 
@@ -544,7 +603,8 @@ fn meta_pda(literal: &[u8], writable: bool) -> [u8; 35] {
 /// data = the 128-byte (v1) or 256-byte (v2) config with launch_ts left zero (init writes it), or
 /// the compact v2 form (tag 0x82) that leaves out the dev (= the payer) and every zero byte.
 /// Accounts: 0 payer(s,w), 1 extra-account-metas(w), 2 mint(s), 3 cfg(w), 4 system program,
-/// and for a v2 config with anti-bundle 5 the slot counter (w).
+/// and for a v2 config with anti-bundle the slot counter (w), then with v3 rules that keep state the
+/// state account (w), then for King of the Hill the token's Meteora pool.
 ///
 /// ⛔ The MINT must sign. Meteora needs the mint's own key to create the pool, so its signature
 /// proves the caller is the launcher; without it a stranger could set another token's rules first.
@@ -571,7 +631,8 @@ fn init(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramRe
         }
         // ⭐ compact v2, so a launch fits one transaction: [0x82, flags, cosigner if FOMO-only, app if
         // app-only, then config bytes 98..168]. The dev wallet is the payer, who signs; the rest is zero.
-        Some(&CFG_V2_COMPACT) => {
+        // ⭐ compact v3: the same, then ext_len u8 and config bytes 168..168+ext_len (trailing zeros left out)
+        Some(&tag @ (CFG_V2_COMPACT | CFG_V3_COMPACT)) => {
             let flags = *data.get(1).ok_or(ProgramError::InvalidInstructionData)?;
             buf[0] = CFG_V2;
             buf[1] = flags;
@@ -586,7 +647,16 @@ fn init(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramRe
                 at += 32;
             }
             buf[98..168].copy_from_slice(data.get(at..at + 70).ok_or(ProgramError::InvalidInstructionData)?);
-            if data.len() != at + 70 {
+            at += 70;
+            if tag == CFG_V3_COMPACT {
+                let n = *data.get(at).ok_or(ProgramError::InvalidInstructionData)? as usize;
+                if n > v3::EXT_LEN {
+                    return Err(ProgramError::InvalidInstructionData);
+                }
+                buf[v3::EXT_AT..v3::EXT_AT + n].copy_from_slice(data.get(at + 1..at + 1 + n).ok_or(ProgramError::InvalidInstructionData)?);
+                at += 1 + n;
+            }
+            if data.len() != at {
                 return Err(ProgramError::InvalidInstructionData);
             }
             CFG2_LEN
@@ -625,6 +695,26 @@ fn init(program_id: &Pubkey, accounts: &[AccountInfo], data: &[u8]) -> ProgramRe
         }
         create_pda(payer, slot, sys, SLOT_LEN, program_id, &[b"slot", mint.key.as_ref(), &[sb]])?;
         metas.push(meta_pda(b"slot", true));
+    }
+    let ext = if len == CFG2_LEN { v3::Ext::read(&buf) } else { v3::Ext::default() };
+    let mut rest = rest.iter().skip(if flags2 & F2_BUNDLE != 0 { 1 } else { 0 });
+    if ext.needs_state() {
+        let state = rest.next().ok_or(ProgramError::NotEnoughAccountKeys)?;
+        let (state_pda, sb) = pda(b"state", mint.key, program_id);
+        if *state.key != state_pda {
+            return Err(ProgramError::InvalidSeeds);
+        }
+        create_pda(payer, state, sys, ext.state_len(), program_id, &[b"state", mint.key.as_ref(), &[sb]])?;
+        v3::init_state(&ext, &mut state.try_borrow_mut_data()?);
+        metas.push(meta_pda(b"state", true));
+    }
+    if ext.king() {
+        // the token's own Meteora pool (created earlier in the launch transaction), at a fixed address
+        let pool = rest.next().ok_or(ProgramError::NotEnoughAccountKeys)?;
+        v3::check_pool(pool, mint.key)?;
+        let mut m = [0u8; 35]; // discriminator 0 = fixed address, read-only
+        m[1..33].copy_from_slice(pool.key.as_ref());
+        metas.push(m);
     }
 
     // TLV: EXECUTE disc (8) | len u32 (4 + n*35) | count u32 | n × ExtraAccountMeta (35 bytes)
@@ -838,8 +928,8 @@ fn validate(c: &[u8]) -> ProgramResult {
     } else if snipe_secs != 0 || cu != 0 || tip != 0 {
         return bad("sniper-fee cap without the rule");
     }
-    if c[146..148] != [0, 0] || c[168..256].iter().any(|&b| b != 0) {
+    if c[146..148] != [0, 0] {
         return bad("reserved bytes");
     }
-    Ok(())
+    v3::validate(c, &bad)
 }

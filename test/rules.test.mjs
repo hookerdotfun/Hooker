@@ -125,3 +125,99 @@ test("the dynamic fee scales with SOL and stops at the cap", () => {
   assert.equal(f(150_000_000n), 57n);
   assert.equal(f(100_000_000_000n), 400n);
 });
+
+// ── v3 rules (bytes 168..256, programs/hooker-hook/src/v3.rs) ───────────────────────────────────
+import { encodeInitData, usesV3, needsState, needsPool, decodeState, kingBar, oscCapBps, OSC, V3_OFF } from "../lib/rules.mjs";
+const off = { ...DEFAULT_RULES, dev };
+const V3 = {
+  antiDump: { maxBuyBps: 200, maxSellBps: 25 },
+  sellScale: { sellSmallBps: 100, sellFloorBps: 10, sellBagBps: 300 },
+  plague: { plagueDose: 1_000_000 },
+  dex: { dexOnly: true },
+  p2p: { p2pOnly: true },
+  potato: { potatoOn: true, potatoMinBps: 1, potatoColdSecs: 600 },
+  ping: { pingOn: true, pingMinBps: 1, pingFreeSecs: 600 },
+  chapters: { chapterStartBps: 100, chapterVolume: 10_000_000_000_000 },
+  breath: { oscKind: OSC.breath, oscPeriod: 300, oscBaseBps: 100, oscAmpPct: 60, oscFloorBps: 10 },
+  momentum: { oscKind: OSC.momentum, oscPeriod: 120, oscDampPermille: 80, oscAmpPct: 40, oscBaseBps: 100, oscFloorBps: 25 },
+  resonance: { oscKind: OSC.resonance, oscPeriod: 60, oscDampPermille: 20, oscAmpPct: 40, oscBaseBps: 100, oscFloorBps: 25 },
+  coupled: { oscKind: OSC.coupled, oscPeriod: 180, oscCouplingPct: 20, oscDampPermille: 20, oscAmpPct: 40, oscBaseBps: 100, oscFloorBps: 25 },
+  king: { kingOn: true, kingMinLamports: 100_000_000, kingBeatPct: 5, kingDecayUnit: 2, kingDecayN: 6 },
+  market: { hoursOn: true, hoursDays: 62, hoursOpenMin: 570, hoursCloseMin: 960, tzOffsetMin: -300, hoursDst: 1, hoursHolidays: true },
+};
+
+test("every v3 rule round-trips and alone is valid", () => {
+  for (const [name, rule] of Object.entries(V3)) {
+    const r = { ...off, ...rule };
+    assert.deepEqual(validateRules(r), [], name);
+    const d = decodeRules(encodeRules(r));
+    for (const [k, v] of Object.entries(rule)) assert.equal(d[k], v, `${name}.${k}`);
+    for (const k of Object.keys(V3_OFF)) if (!(k in rule)) assert.equal(d[k], V3_OFF[k], `${name} leaves ${k} off`);
+  }
+});
+
+test("v3 byte offsets match the program's table", () => {
+  const b = encodeRules({ ...off, ...V3.antiDump, ...V3.potato, ...V3.king, ...V3.momentum });
+  assert.equal(b[168], 1 | 32); assert.equal(b[169], 1); assert.equal(b[170], 2);
+  assert.equal(b.readUInt16LE(172), 200); assert.equal(b.readUInt16LE(174), 25);
+  assert.equal(b.readUInt16LE(190), 1); assert.equal(b.readUInt32LE(192), 600);
+  assert.equal(b.readUInt16LE(212), 120); assert.equal(b.readUInt16LE(220), 80);
+  assert.equal(b.readBigUInt64LE(224), 100_000_000n); assert.equal(b[232], 5); assert.equal(b[233], 2); assert.equal(b.readUInt16LE(234), 6);
+  const h = encodeRules({ ...off, ...V3.market, hoursSells: true });
+  assert.equal(h[169], 2 | 4 | (1 << 3));
+});
+
+test("init: a launch without v3 rules sends exactly the v2 form; with them, the trimmed 0x83 form", () => {
+  const plain = encodeInitData(off);
+  assert.equal(plain[0], 0x82); assert.equal(plain.length, 72);
+  const v3 = encodeInitData({ ...off, ...V3.potato });
+  assert.equal(v3[0], 0x83);
+  assert.equal(v3[72], 194 - 168); // cold-after (600 = 0x0258 at 192) is the last non-zero byte: nothing after it is sent
+  assert.equal(v3.length, 73 + 26);
+  assert.equal(usesV3(off), false); assert.equal(usesV3({ ...off, ...V3.dex }), true);
+});
+
+test("which rules need the state account and the pool", () => {
+  for (const k of ["potato", "ping", "chapters", "momentum", "resonance", "coupled", "king"]) assert.equal(needsState({ ...off, ...V3[k] }), true, k);
+  for (const k of ["antiDump", "sellScale", "plague", "dex", "p2p", "breath", "market"]) assert.equal(needsState({ ...off, ...V3[k] }), false, k);
+  assert.equal(needsPool({ ...off, ...V3.king }), true); assert.equal(needsPool({ ...off, ...V3.potato }), false);
+});
+
+test("v3 exclusions mirror the program", () => {
+  const bad = (r, why) => assert.ok(validateRules({ ...off, ...r }).length > 0, why);
+  bad({ ...V3.antiDump, tradeGuardBps: 100 }, "anti-dump + trade guard");
+  bad({ ...V3.antiDump, ...V3.sellScale }, "max per sell + graduated sell caps");
+  bad({ ...V3.chapters, maxWalletBps: 300 }, "chapters + max per wallet");
+  bad({ ...V3.plague, ...V3.dex }, "plague + DEX-only");
+  bad({ ...V3.p2p, ...V3.potato }, "P2P + hot potato");
+  bad({ ...V3.p2p, ...V3.king }, "P2P + King");
+  bad({ hoursDst: 1 }, "daylight saving without hours");
+  bad({ ...V3.momentum, oscDampPermille: 5 }, "damping under 1%/s");
+  bad({ ...V3.momentum, oscCouplingPct: 10 }, "coupling on a single oscillator");
+  bad({ ...V3.king, kingMinLamports: 1_000 }, "a crown for dust");
+  bad({ ...V3.sellScale, sellFloorBps: 100 }, "graduated floor not below the small cap");
+  // combinations that make sense are fine
+  assert.deepEqual(validateRules({ ...off, ...V3.potato, ...V3.ping, ...V3.king, ...V3.antiDump }), []);
+});
+
+test("state decoding and the King's bar", () => {
+  const s = Buffer.alloc(256 + 32 * 48);
+  const king = Keypair.generate().publicKey;
+  king.toBuffer().copy(s, 200); s.writeBigUInt64LE(1_000_000_000n, 232); s.writeBigInt64LE(1_000n, 240); s.writeUInt32LE(3, 248);
+  king.toBuffer().copy(s, 256 + 3 * 48); s.writeUInt32LE(3, 256 + 3 * 48 + 32); s.writeBigUInt64LE(5_000_000_000n, 256 + 3 * 48 + 40);
+  s[40] = 2;
+  const d = decodeState(s);
+  assert.equal(d.king.king, king.toBase58()); assert.equal(d.king.reign, 3); assert.equal(d.ping.next, "sell");
+  assert.deepEqual(d.reigns.map((r) => [r.reign, r.valueLamports]), [[3, 5_000_000_000n]]);
+  const r = { ...off, ...V3.king };
+  assert.equal(kingBar(r, d, 1_000), 1_050_000_000n);
+  assert.ok(Math.abs(Number(kingBar(r, d, 1_000 + 6 * 3_600)) - 525_000_000) < 1_000);
+  assert.equal(kingBar(r, { king: { king: null } }, 0), 100_000_000n);
+});
+
+test("oscillator gauge: breathing follows the launch clock", () => {
+  const r = { ...off, ...V3.breath, launchTs: 0 };
+  assert.equal(oscCapBps(r, null, 0), 100);
+  assert.equal(oscCapBps(r, null, 75), 160); // a quarter cycle: base × (1 + 60%)
+  assert.equal(oscCapBps(r, null, 225), 40);
+});

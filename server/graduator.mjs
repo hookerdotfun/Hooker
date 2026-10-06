@@ -43,6 +43,8 @@ let lastConfigs = Date.now();
 log(`configs: ${Object.keys(first.configs).join("/")} SOL, pump.fun start cap ${first.pump.capAt(0).toFixed(1)} SOL, graduates at ${first.pump.completionSol.toFixed(1)} SOL`);
 // RPC budget while idle (per hour): a tick is free when nothing trades; discovery is 2 heavy
 // getProgramAccounts per config; the sweep's balance read runs after a graduation or every SWEEP_MS
+const KING_MS = Number(process.env.KING_MS ?? 60_000); // King of the Hill payouts (lib/king.mjs)
+let lastKing = 0;
 const TICK_MS = Number(process.env.TICK_MS ?? 8_000), DISCOVER_MS = Number(process.env.DISCOVER_MS ?? 900_000), SWEEP_MS = Number(process.env.SWEEP_MS ?? 900_000), FLYWHEEL_MS = Number(process.env.FLYWHEEL_MS ?? 600_000);
 let lastDiscover = 0, lastSweep = 0, lastFlywheel = 0, stopping = false;
 // a tick can take a while: on SIGTERM hand the lock back right away, finish the tick, then exit
@@ -57,6 +59,7 @@ while (!stopping) {
     const finished = await g.tick();
     if (finished > 0 || Date.now() - lastSweep > SWEEP_MS) { await g.sweep(); lastSweep = Date.now(); }
     if (flywheel && Date.now() - lastFlywheel > FLYWHEEL_MS) { await flywheel.tick(); lastFlywheel = Date.now(); }
+    if (Date.now() - lastKing > KING_MS) { await g.kingTick(); lastKing = Date.now(); }
   } catch (e) { g.log(`⚠ pass failed: ${e.message}`); }
   await new Promise((r) => setTimeout(r, TICK_MS));
 }

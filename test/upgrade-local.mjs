@@ -5,7 +5,9 @@ import { Connection, Keypair, PublicKey, Transaction, ComputeBudgetProgram, LAMP
 import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { extendIx, upgradeIx, programDataOf, extendNeeded, sameProgram } from "../lib/upgrade.mjs";
+import { extendIx, extendUncheckedIx, upgradeIx, programDataOf, extendNeeded, sameProgram } from "../lib/upgrade.mjs";
+// EXTEND=unchecked rehearses the MAINNET path (scripts/upgrade-hook-mainnet.mjs): mainnet and 2.x validators only take the
+// authority-free ExtendProgram, which the deployer pays; Agave 4.0 validators only take ExtendProgramChecked (the default here)
 
 const RPC = process.env.LOCAL_RPC || "http://127.0.0.1:8997";
 const CLI = `${process.env.HOME}/.local/share/solana/install/releases/4.0.0/solana-release/bin/solana`;
@@ -31,6 +33,10 @@ ok(!!buffer, "the new build is in a buffer, handed to the cold key");
 const extra = extendNeeded((await conn.getAccountInfo(pd)).data.length, V2.length, 8 * 1024);
 ok(extra > 0, `the program account must grow by ${extra.toLocaleString()} bytes`);
 const sendAs = (ixs) => sendAndConfirmTransaction(conn, new Transaction({ feePayer: cold.publicKey }).add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 20_000 }), ...ixs), [cold], { commitment: "confirmed" });
+if (process.env.EXTEND === "unchecked") {
+  await sendAndConfirmTransaction(conn, new Transaction({ feePayer: deployer.publicKey }).add(extendUncheckedIx({ program: program.publicKey, payer: deployer.publicKey, bytes: extra })), [deployer], { commitment: "confirmed" });
+  ok((await conn.getAccountInfo(pd)).data.length === 45 + V2.length + 8 * 1024, "the deployer extended the program account with the authority-free ExtendProgram (as on mainnet)");
+} else {
 // a stranger cannot do either step
 const stranger = Keypair.generate();
 await conn.confirmTransaction(await conn.requestAirdrop(stranger.publicKey, LAMPORTS_PER_SOL), "confirmed");
@@ -40,6 +46,7 @@ catch (e) { why = (e.transactionLogs ?? []).join(" ") || String(e.message); }
 ok(/Incorrect upgrade authority|IncorrectAuthority|incorrect authority/i.test(why), "nobody but the upgrade authority can extend the program (refused for the authority, not for anything else)");
 await sendAs([extendIx({ program: program.publicKey, authority: cold.publicKey, bytes: extra })]);
 ok((await conn.getAccountInfo(pd)).data.length === 45 + V2.length + 8 * 1024, "the cold key extended the program account (it paid the rent)");
+}
 const s0 = await conn.getSlot("confirmed");
 while ((await conn.getSlot("confirmed")) < s0 + 2) await new Promise((r) => setTimeout(r, 300));
 const coldBefore = await conn.getBalance(cold.publicKey);

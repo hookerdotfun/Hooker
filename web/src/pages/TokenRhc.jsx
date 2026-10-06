@@ -74,7 +74,7 @@ function Trade({ t, refresh }) {
       ) : (
         <>
           <div className="field">
-            <span className="label">{side === "buy" ? "You pay" : "You sell"}{evmAddress && bal && <b className="mono" style={{ fontWeight: 400 }}>{side === "buy" ? amt(bal.quote?.balance ?? bal.eth, unit, 4) : `${fmtTokens(units(bal.amount))} $${t.symbol}`}</b>}</span>
+            <span className="label">{side === "buy" ? "You pay" : "You sell"}{side === "sell" && evmAddress && bal && <b className="mono" style={{ fontWeight: 400 }}>{`${fmtTokens(units(bal.amount))} $${t.symbol}`}</b>}</span>
             <div className="amount"><input type="number" min="0" step={side === "buy" ? "any" : "5"} value={amount} onChange={(e) => setAmount(e.target.value)} /><span>{side === "buy" ? unit : "%"}</span></div>
             <div className="quick">{quick.map((v) => <button type="button" key={v} className={amount === v ? "on" : ""} onClick={() => setAmount(v)}>{side === "buy" ? `${v} ${unit}` : `${v}%`}</button>)}</div>
           </div>
@@ -82,7 +82,7 @@ function Trade({ t, refresh }) {
         </>
       )}
       {msg && <p className={msg.ok ? "good" : "err"}>{msg.text}</p>}
-      <p className="hint">On Robinhood Chain, paid in {unit}. A buy bigger than what is left of the curve only takes what is left, and the rest comes back.</p>
+      <p className="hint">On Robinhood Chain, paid in {unit}.</p>
     </section>
   );
 }

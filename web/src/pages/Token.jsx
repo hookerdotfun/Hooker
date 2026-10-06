@@ -8,6 +8,37 @@ import Logo from "../components/Logo.jsx";
 import { parseWallets, fillList } from "../lib/lists.js";
 import TokenRhc from "./TokenRhc.jsx";
 
+/** What the v3 rules that remember something show right now (GET /api/token/:mint `live`). */
+function LivePanel({ t }) {
+  const { live, rules, chainTime } = t;
+  const { address } = useWallet();
+  const you = (w) => (w && w === address ? "you" : w ? short(w) : null);
+  const left = (at) => (at && at > chainTime ? duration(at - chainTime) : null);
+  const rows = [];
+  if (live.potato) rows.push(["Hot potato", live.potato.holder ? `${you(live.potato.holder)} holds it${left(live.potato.coldAt) ? `, cold in ${left(live.potato.coldAt)}` : live.potato.coldAt ? ", gone cold" : ""}` : "nobody yet"]);
+  if (live.ping) rows.push(["Ping pong", live.ping.next === "any" ? "either side can go" : `${live.ping.next === "buy" ? "buyers" : "sellers"}' turn${left(live.ping.freeAt) ? `, free for both in ${left(live.ping.freeAt)}` : live.ping.freeAt ? ", free for both now" : ""}`]);
+  if (live.chapters) rows.push(["Chapters", `chapter ${live.chapters.chapter}: max ${live.chapters.capBps / 100}% per wallet, doubles at ${tokens(live.chapters.nextAt)} tokens traded (${tokens(live.chapters.volume)} so far)`]);
+  if (live.oscCapBps != null) rows.push([["", "Breathing cap", "Momentum", "Resonance", "Coupled resonator"][rules.oscKind], `one buy can take up to ${(live.oscCapBps / 100).toFixed(2)}% of supply right now`]);
+  const k = live.king;
+  if (k) rows.push(["King of the Hill", k.king ? `${you(k.king)} reigns with a ${sol(Number(k.bidLamports) / 1e9, 3)} buy, for ${duration(Math.max(0, chainTime - k.since))}. To take the crown: ${sol(Number(k.barLamports) / 1e9, 3)} in one buy.` : `the throne is empty: ${sol(Number(k.barLamports) / 1e9, 3)} in one buy takes it.`]);
+  return (
+    <section className="panel">
+      <h3>Right now</h3>
+      <ul className="rules">{rows.map(([h, d]) => <li key={h}><div><b>{h}</b>{d}</div></li>)}</ul>
+      {k?.hall?.length > 0 && (
+        <>
+          <h3 style={{ marginTop: 18 }}>Hall of Kings</h3>
+          <ul className="rules">{k.hall.map((r) => (
+            <li key={r.reign}><div><b>{`#${r.reign} ${you(r.king) ?? "?"}`}{r.ended ? "" : " (reigning)"}</b>
+              {`${sol(Number(r.valueLamports) / 1e9, 3)} traded during the reign, earning ${sol(Number(r.owedLamports) / 1e9, 4)}; ${sol(Number(r.paidLamports) / 1e9, 4)} paid so far.`}</div></li>
+          ))}</ul>
+          <p className="hint">The King earns {k.cutBps / 100}% of every trade's value while they reign, paid in SOL about every minute.</p>
+        </>
+      )}
+    </section>
+  );
+}
+
 function Trade({ t, refresh }) {
   const { address, connect, signTransaction } = useWallet();
   const [side, setSide] = useState("buy");
@@ -69,7 +100,7 @@ function Trade({ t, refresh }) {
       ) : (
         <>
           <div className="field">
-            <span className="label">{side === "buy" ? "You pay" : "You sell"}{address && bal && <b className="mono" style={{ fontWeight: 400 }}>{side === "buy" ? sol(bal.sol, 3) : `${tokens(bal.amount)} $${t.meta?.symbol ?? t.symbol}`}</b>}</span>
+            <span className="label">{side === "buy" ? "You pay" : "You sell"}{side === "sell" && address && bal && <b className="mono" style={{ fontWeight: 400 }}>{`${tokens(bal.amount)} $${t.meta?.symbol ?? t.symbol}`}</b>}</span>
             <div className="amount"><input type="number" min="0" step={side === "buy" ? "0.1" : "5"} value={amount} onChange={(e) => setAmount(e.target.value)} /><span>{side === "buy" ? "SOL" : "%"}</span></div>
             <div className="quick">{quick.map((v) => <button type="button" key={v} className={amount === v ? "on" : ""} onClick={() => setAmount(v)}>{side === "buy" ? `${v} SOL` : `${v}%`}</button>)}</div>
           </div>
@@ -77,7 +108,6 @@ function Trade({ t, refresh }) {
         </>
       )}
       {msg && <p className={msg.ok ? "good" : "err"}>{msg.text}</p>}
-      <p className="hint">A buy bigger than what is left of the curve only takes what is left.</p>
     </section>
   );
 }
@@ -277,6 +307,7 @@ function TokenSol({ mint }) {
               </>
             )}
           </section>
+          {!t.native && t.live && <LivePanel t={t} />}
           {!t.native && <section className="panel">
             <h3>Rules</h3>
             {t.list && (
