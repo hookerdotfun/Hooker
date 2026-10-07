@@ -16,7 +16,7 @@ It runs on two chains:
 
 Every Solana token address (the Hooker token and its Pumpfun coin) ends in `hook`.
 
-**The burn.** Every Pumpfun coin that graduates names Hooker's burn wallet as its creator, so its creator fees buy $HOOKER and burn it, forever (`lib/flywheel.mjs`). The two chains are separate: a Pons coin's creator fees go to Hooker's graduation wallet on Robinhood Chain, for Hooker's own Pons token, never $HOOKER. A creator can route a coin's fees to its holders instead with the "Creator fees to holders" hook. Every claim and burn is a public transaction.
+**The burn.** Every Pumpfun coin that graduates names Hooker's burn wallet as its creator, so its creator fees buy $HOOKER and burn it, forever (`lib/flywheel.mjs`). The two chains are separate: a Pons coin's creator fees go to Hooker's graduation wallet on Robinhood Chain, for $HOOKER on Pons, never the Solana $HOOKER. A creator can route a coin's fees to its holders instead with the "Creator fees to holders" hook. Every claim and burn is a public transaction.
 
 ## Hooks
 
@@ -115,6 +115,8 @@ The end-to-end suites run against the **real mainnet bytecode**: Meteora's bondi
 
 ## On chain
 
+- $HOOKER on Solana (Pumpfun): `9BMbyUfW6g4ptTGqyZeLdKRMz9tM4ssSgUEKYK94hook`
+- $HOOKER on Robinhood Chain (Pons): `0xEcc7660f54aaBA88b9cBE5aa6D823603035D5F6F`
 - Solana hook program: `GE5TW1AFehhNFLYiSiaAkmbTjnHTB3hdhw6ZZFBP5sLV`
 - Robinhood Chain launchpad: `0x9151414adc57d8a77085d0f0f2fbb21269a3b42a`
 - Robinhood Chain token implementation (every launch is a clone of it): `0x3db35b372a2bd4be083dc9e3265f97e8a7d27a45`

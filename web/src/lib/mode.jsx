@@ -25,7 +25,16 @@ export function ModeProvider({ children }) {
   }, []);
   // a link that names a mode (?on=pons) moves the switch
   useEffect(() => { const m = fromSearch(search); if (m) setMode(m); }, [search, setMode]);
-  useEffect(() => { document.documentElement.dataset.mode = mode; }, [mode]);
+  useEffect(() => {
+    document.documentElement.dataset.mode = mode;
+    // the tab's icon follows the mode too: the glass hook on Pons, the green one on Pumpfun
+    const pons = mode === "pons";
+    for (const [size, sol, rhc] of [["32x32", "/favicon-v4-32.png", "/favicon-pons-32.png"], ["64x64", "/favicon-v4-64.png", "/favicon-pons-64.png"]]) {
+      const link = document.querySelector(`link[rel="icon"][sizes="${size}"]`);
+      if (link) link.href = pons ? rhc : sol;
+    }
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", pons ? "#0b0b0b" : "#0b0b0e");
+  }, [mode]);
   // whether the Pons launchpad takes the newer hooks (a v6+ launchpad); read once
   const [ponsV3, setPonsV3] = useState(false);
   useEffect(() => { api.evmInfo().then((i) => setPonsV3(!!i?.v3)).catch(() => {}); }, []);
@@ -38,6 +47,9 @@ export function ModeProvider({ children }) {
       /** the wallet kind connect() takes */
       walletKind: pons ? "evm" : "sol",
       venue: pons ? "Pons" : "Pumpfun",
+      /** the mark for this mode: the glass hook on Pons, the green hook on Pumpfun */
+      logo: pons ? "/logo-pons-256.png" : "/logo-v2-256.png",
+      logoFull: pons ? "/logo-pons-full.png" : "/logo-full.png",
       unit: pons ? "ETH" : "SOL",
       chainName: pons ? "Robinhood Chain" : "Solana",
     };

@@ -13,7 +13,7 @@ export default function TokenCard({ l }) {
   return (
     <Link to={`/t/${l.mint}`} className="tc">
       <div className="tc-art">
-        <Logo src={l.meta?.image} blank={<div className="tc-blank"><img src="/logo-full.png" alt="" /></div>} />
+        <Logo src={l.meta?.image} blank={<div className="tc-blank"><img src={l.chain === "rhc" ? "/logo-pons-full.png" : "/logo-full.png"} alt="" /></div>} />
         <span className={`tc-badge ${done ? "on" : ""}`}>{venueLabel(l)}</span>
         {l.createdAt ? <span className="tc-age">{ago(l.createdAt)}</span> : null}
       </div>

@@ -36,7 +36,7 @@ export function CHead({ eyebrow, title, sub }) {
 }
 
 export default function Home() {
-  const { mode, chain, venue, pons, ponsV3 } = useMode();
+  const { mode, chain, venue, pons, ponsV3, logoFull } = useMode();
   const [all, setAll] = useState(null);
   const [evmInfo, setEvmInfo] = useState(null);
   const [info, setInfo] = useState(null);
@@ -59,7 +59,8 @@ export default function Home() {
   // only this mode's chain. Each side has its own platform coin: $HOOKER on Solana, Hooker's Pons token on Robinhood Chain
   const data = useMemo(() => (all ? all.filter((l) => inMode(l, chain)) : null), [all, chain]);
   const grads = useMemo(() => (data ?? []).filter((l) => l.status !== "trading"), [data]);
-  const ca = pons ? evmInfo?.platformToken ?? null : all?.find((l) => l.native)?.mint ?? null;
+  // each side's own coin: the featured Pons coin (featured.json evmCoins) on Pons, $HOOKER on Pumpfun
+  const ca = pons ? all?.find((l) => l.native && l.chain === "rhc")?.mint ?? evmInfo?.platformToken ?? null : all?.find((l) => l.native && l.chain !== "rhc")?.mint ?? null;
   const [copied, setCopied] = useState(false);
   const copyCa = async () => { try { await navigator.clipboard.writeText(ca); setCopied(true); setTimeout(() => setCopied(false), 1400); } catch {} };
   const money = (capSol) => (info?.solUsd ? usd(capSol * info.solUsd) : "–");
@@ -71,7 +72,7 @@ export default function Home() {
     <>
       {/* ── hero: the mark, the line, two buttons, the program ─────────────────────────────── */}
       <section className="phero">
-        <div className="phero-mark"><img src="/logo-full.png" alt="" /></div>
+        <div className="phero-mark"><img src={logoFull} alt="" /></div>
         <h1><span className="grad">Hooker</span></h1>
         <p className="lede">{pons ? "Launch a Pons token on Robinhood Chain with rules built into the token itself." : "Launch a Pumpfun token on Solana with rules built into the token itself."}</p>
         <div className="row">

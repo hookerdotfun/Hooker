@@ -167,7 +167,7 @@ function Launched({ t, image, onClose }) {
   return (
     <div className="modal" onClick={onClose}>
       <div className="modal-box launched" onClick={(e) => e.stopPropagation()}>
-        <Logo src={t.meta?.image} className="launched-img" lazy={false} fallback={image} blank={<div className="launched-img blank"><img src="/logo-full.png" alt="" /></div>} />
+        <Logo src={t.meta?.image} className="launched-img" lazy={false} fallback={image} blank={<div className="launched-img blank"><img src="/logo-pons-full.png" alt="" /></div>} />
         <div className="launched-ok"><span className="vmark ok"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12.5 10 17 19 7" /></svg></span>Launched</div>
         <h3 className="modal-title" style={{ marginBottom: 6 }}>Your token is live</h3>
         <p className="muted center" style={{ margin: "0 0 18px" }}><b className="tsym-in">${t.symbol}</b> is trading on Hooker, on Robinhood Chain.</p>
@@ -195,7 +195,8 @@ function LivePanel({ t }) {
   if (live.chapters) rows.push(["Chapters", `chapter ${live.chapters.chapter}: max ${live.chapters.capBps / 100}% per wallet, doubles at ${n(live.chapters.nextAt)} tokens traded (${n(live.chapters.volume)} so far)`]);
   if (live.oscCapBps != null) rows.push([["", "Breathing cap", "Momentum", "Resonance", "Coupled resonator"][rules.oscKind], `one buy can take up to ${(live.oscCapBps / 100).toFixed(2)}% of supply right now`]);
   const k = live.king;
-  const a = (v) => amt(v, k?.unit ?? "ETH", 4);
+  // a tiny amount (a King's first earnings) reads "<0.0001 ETH", never a misleading "0 ETH"
+  const a = (v) => (v > 0 && v < 0.0001 ? `<0.0001 ${k?.unit ?? "ETH"}` : amt(v, k?.unit ?? "ETH", 4));
   if (k) rows.push(["King of the Hill", k.king ? `${you(k.king)} reigns with a ${a(k.bid)} buy, for ${duration(Math.max(0, now - k.since))}. To take the crown: ${a(k.bar)} in one buy.` : `the throne is empty: ${a(k.bar)} in one buy takes it.`]);
   return (
     <section className="panel">
@@ -249,7 +250,7 @@ export default function TokenRhc({ mint }) {
     <div className="token">
       {launched && <Launched t={t} image={fresh} onClose={closeLaunched} />}
       <div className="token-head">
-        <Logo src={t.meta?.image} className="avatar" lazy={false} fallback={fresh} blank={<div className="avatar thumb blank"><img src="/logo-full.png" alt="" /></div>} />
+        <Logo src={t.meta?.image} className="avatar" lazy={false} fallback={fresh} blank={<div className="avatar thumb blank"><img src="/logo-pons-full.png" alt="" /></div>} />
         <div className="info">
           <h1>{t.name} <span className="tsym">${t.symbol}</span></h1>
           {t.meta?.description && <p className="desc">{t.meta.description}</p>}
@@ -283,10 +284,10 @@ export default function TokenRhc({ mint }) {
               onPons ? (
                 <>
                   <div className="grad-head"><h3>Graduated</h3></div>
-                  <p className="muted grad-line">The token is now a Pons coin. {g.paid ? "Every holder has received theirs." : "Holders are being paid right now."}</p>
+                  <p className="muted grad-line">The token is now a Pons coin.{t.native ? "" : g.paid ? " Every holder has received theirs." : " Holders are being paid right now."}</p>
                   <div className="bigstats grad-stats">
                     <div><b>{usd(t.marketCapUsd)}</b><span>market cap</span></div>
-                    <div><b>Pons</b><span>{g.phase === 2 ? "graduated on Pons, open market" : "on Pons's bonding curve"}</span></div>
+                    <div><b>Pons</b><span>{g.phase === 2 ? "graduated on Pons, open market" : g.phase === 1 ? "graduating on Pons" : "on Pons's bonding curve"}</span></div>
                   </div>
                 </>
               ) : (
@@ -308,13 +309,13 @@ export default function TokenRhc({ mint }) {
               </>
             )}
           </section>
-          <section className="panel">
+          {!t.native && <section className="panel">
             <h3>Rules</h3>
             <ul className="rules">{ruleText.map((x) => <li key={x.t}><div><b>{x.t}</b>{x.d}</div></li>)}</ul>
             <p className="hint">Enforced by the token itself on Robinhood Chain. Nobody can change them.</p>
-          </section>
-          {t.live && <LivePanel t={t} />}
-          <Trades t={t} />
+          </section>}
+          {!t.native && t.live && <LivePanel t={t} />}
+          {!t.native && <Trades t={t} />}
         </div>
         <aside className="sticky">
           {(t.status === "trading" || refunding) && <Trade t={t} refresh={load} />}

@@ -78,12 +78,12 @@ export function Curve({ kind }) {
   return (
     <svg className="jcurve" viewBox="0 0 240 76" preserveAspectRatio="none" aria-hidden="true">
       <defs>
-        <linearGradient id={`jc${kind}`} x1="0" x2="1"><stop offset="0" stopColor="#86efac" stopOpacity=".15" /><stop offset="1" stopColor="#bbf7d0" /></linearGradient>
-        <linearGradient id={`jf${kind}`} x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="#86efac" stopOpacity=".22" /><stop offset="1" stopColor="#86efac" stopOpacity="0" /></linearGradient>
+        <linearGradient id={`jc${kind}`} x1="0" x2="1"><stop offset="0" style={{ stopColor: "var(--accent)" }} stopOpacity=".15" /><stop offset="1" style={{ stopColor: "var(--accent-2)" }} /></linearGradient>
+        <linearGradient id={`jf${kind}`} x1="0" x2="0" y1="0" y2="1"><stop offset="0" style={{ stopColor: "var(--accent)" }} stopOpacity=".22" /><stop offset="1" style={{ stopColor: "var(--accent)" }} stopOpacity="0" /></linearGradient>
       </defs>
       <path d={`${paths[kind]} H 240 V 76 H 4 Z`} fill={`url(#jf${kind})`} />
       <path d={paths[kind]} fill="none" stroke={`url(#jc${kind})`} strokeWidth="2.2" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-      <circle cx={dot[0]} cy={dot[1]} r="3.5" fill="#dcfce7" />
+      <circle cx={dot[0]} cy={dot[1]} r="3.5" style={{ fill: "var(--accent-5)" }} />
     </svg>
   );
 }

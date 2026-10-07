@@ -35,7 +35,7 @@ import { loadConfigState, feeIsFlat, startFeePct, configFor } from "../lib/confi
 import { pumpMarketCap } from "../lib/pumpprice.mjs";
 import { createLander } from "../lib/lander.mjs";
 import { listPairs, pairMemo, MAX_CREATOR_FEE_BPS } from "../lib/pairs.mjs";
-import { loadFeatured, featuredSummary, loadHideBefore } from "../lib/featured.mjs";
+import { loadFeatured, loadFeaturedEvm, featuredSummary, loadHideBefore } from "../lib/featured.mjs";
 import { createRequire } from "node:module";
 import { randomBytes, createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, statSync, readdirSync, unlinkSync } from "node:fs";
@@ -261,6 +261,8 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
   // no restart, no rebuild. A test passes `featured` / `hideBefore` and keeps them fixed.
   let featured = featuredFixed ?? loadFeatured(), hideBefore = hideBeforeFixed ?? loadHideBefore();
   let featuredByMint = new Map(featured.map((f) => [f.mint, f]));
+  // the Pons side's own featured coins (featured.json evmCoins, scripts/set-ca-pons.mjs), reloaded with the rest
+  let featuredEvm = featuredFixed ? [] : loadFeaturedEvm();
   if (!featuredFixed) {
     const file = new URL("../featured.json", import.meta.url);
     let seen = 0;
@@ -269,7 +271,9 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
         const m = statSync(file).mtimeMs;
         if (m === seen) return;
         const next = loadFeatured(); // a malformed file throws here and the last good list stays
+        const nextEvm = loadFeaturedEvm();
         featured = next; featuredByMint = new Map(featured.map((f) => [f.mint, f]));
+        if (!featuredFixed) featuredEvm = nextEvm;
         if (hideBeforeFixed == null) hideBefore = loadHideBefore();
         seen = m;
       } catch (e) { console.error(new Date().toISOString(), "featured.json not reloaded:", e.message); }
@@ -407,7 +411,8 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       const rhc = evm ? await Promise.race([evm.listAll().catch(() => []), new Promise((r) => setTimeout(() => r([]), 4_000))]) : [];
       const out = [...sol, ...rhc].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
       // featured coins (our own $HOOKER) are pinned first
-      return { launches: [...(await Promise.all(featured.map(summarizeFeatured))), ...out] };
+      const featRhc = evm ? (await Promise.all(featuredEvm.map((f) => evm.summarizeFeatured(f).catch(() => null)))).filter(Boolean) : [];
+      return { launches: [...(await Promise.all(featured.map(summarizeFeatured))), ...featRhc, ...out] };
     },
 
     "GET /api/token/:mint": async ({ params }) => {
@@ -756,7 +761,7 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
   };
 
   // ── Robinhood Chain: launches that graduate into Pons V2 (lib/evm.mjs), on when EVM_LAUNCHPAD is set ─
-  const evm = evmOpt === undefined ? createEvm({ cached, ethUsd, knowCid }) : evmOpt;
+  const evm = evmOpt === undefined ? createEvm({ cached, ethUsd, knowCid, featuredEvm: () => featuredEvm }) : evmOpt;
   if (evm) Object.assign(routes, evm.routes);
 
   // ── IPFS upload via pump.fun's route (it sends no CORS header, so the browser can't read it) ─

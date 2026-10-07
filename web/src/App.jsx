@@ -22,7 +22,8 @@ function XIcon({ size = 15 }) {
 
 /** The mark. The header shows it alone; the footer keeps the name next to it. */
 function Brand({ label = false }) {
-  return <Link to="/" className="brand"><img src="/logo-v2-256.png" alt="Hooker" width="38" height="38" />{label && <span>Hooker</span>}</Link>;
+  const { logo } = useMode();
+  return <Link to="/" className="brand"><img src={logo} alt="Hooker" width="38" height="38" />{label && <span>Hooker</span>}</Link>;
 }
 
 /**

@@ -51,7 +51,7 @@ export default function How() {
         <p className="lede">Launch a token with rules built into it, trade on a bonding curve identical to {venue}'s and graduate into a normal {venue} token.</p>
       </div>
       <div className="steps">
-        {SECTIONS[mode].map(([t, d], i) => <div className="step" key={t}><span className="n">0{i + 1}</span><h3>{t}</h3>{d.split("\n\n").map((para) => <p key={para}>{para}</p>)}</div>)}
+        {SECTIONS[mode].map(([t, d], i) => <div className="step" key={t}><span className="n">0{i + 1}</span><h3>{t}</h3><div className="step-body">{d.split("\n\n").map((para) => <p key={para}>{para}</p>)}</div></div>)}
       </div>
       <section className="section how-sim">
         <div className="how-sim-copy">

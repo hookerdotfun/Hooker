@@ -78,31 +78,6 @@ function EvmRewardRow({ data, ethUsd, onDone }) {
   );
 }
 
-/**
- * Robinhood Chain coins that graduated into Pons. Their Pons creator fees never come to the creator: the launchpad
- * hands them to Pons's holder distributor (pushed to holders by Pons, nobody claims) or to the graduation wallet,
- * which buys and burns Hooker's Pons token (never $HOOKER). So this row explains where the fees go and links each coin on Pons; there is no claim.
- */
-function PonsRow({ coins }) {
-  const toHolders = coins.filter((l) => l.rules?.holderRewards).length;
-  const toBurn = coins.length - toHolders;
-  const where = [toHolders && `${toHolders === coins.length ? "They go" : `${toHolders} go`} to your holders, paid out by Pons automatically.`,
-    toBurn && `${toBurn === coins.length ? "They buy" : `${toBurn} buy`} and burn Hooker’s Pons token.`].filter(Boolean).join(" ");
-  return (
-    <div className="reward">
-      <div className="reward-l">
-        <b>Pons</b>
-        <span>{coins.length
-          ? <>Creator fees on Pons are not claimed by the creator. {where}</>
-          : "When a coin graduates into Pons, its creator fees go to your holders or buy and burn Hooker’s Pons token. Nothing to claim here."}</span>
-        {coins.length > 0 && <span>{coins.map((l, i) => <span key={l.mint}>{i > 0 && " · "}<a href={l.graduated.ponsUrl} target="_blank" rel="noreferrer">${l.meta?.symbol ?? l.symbol} on Pons</a></span>)}</span>}
-      </div>
-      <div className="reward-v"><b>{coins.length}</b><span>{coins.length === 1 ? "coin" : "coins"}</span></div>
-      <span />
-    </div>
-  );
-}
-
 export default function Me() {
   const { address, evmAddress, connect } = useWallet();
   const { pons, walletKind } = useMode();
@@ -145,10 +120,7 @@ export default function Me() {
       <section className="panel rewards">
         <h3>Creator rewards</h3>
         {pons ? (
-          <>
-            <EvmRewardRow data={ew} ethUsd={ethUsd} onDone={loadEvm} />
-            <PonsRow coins={created.map((m) => byMint[m]).filter((l) => l?.graduated?.ponsUrl)} />
-          </>
+          <EvmRewardRow data={ew} ethUsd={ethUsd} onDone={loadEvm} />
         ) : (
           <>
             <RewardRow venue="meteora" title="Hooker" sub="Creator fees from your coins on Hooker." data={rw?.meteora} solUsd={rw?.solUsd} onDone={loadRewards} />

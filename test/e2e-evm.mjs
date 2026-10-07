@@ -21,7 +21,8 @@ const { createEvmGraduator } = await import("../server/evm-graduator.mjs");
 import { rmSync } from "node:fs";
 rmSync(process.env.EVM_BURN_LEDGER, { force: true });
 
-const PORT = 8546, URL_ = `http://127.0.0.1:${PORT}`;
+// E2E_PORT: another session may run its own anvil on 8546
+const PORT = Number(process.env.E2E_PORT || 8546), URL_ = `http://127.0.0.1:${PORT}`;
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log(`  ✓ ${m}`); } else { fail++; console.log(`  ✗ ${m}`); } };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -270,6 +271,21 @@ await sendTx(k1, await api("POST /api/evm/tx/sell", { body: { token: tokK, amoun
 cache.clear();
 const s33 = await api("GET /api/evm/token/:token", { params: { token: tokK } });
 ok(s33.live.potato.holder === k2.address && s33.live.king.king === null && s33.live.king.hall[0].ended, "after the sell: the potato is k2's, the King gave up the crown, the hall shows the reign ended");
+// hiding a token from the site (data/hidden-tokens.json, read live): gone from the lists, its page a 404, the chain untouched
+{
+  const { writeFileSync: wf, rmSync: rf } = await import("node:fs");
+  const hf = `${process.env.DATA_DIR || new URL("../data/", import.meta.url).pathname}/hidden-tokens.json`;
+  wf(hf, JSON.stringify([tokK.toLowerCase()]));
+  cache.clear();
+  let code = null;
+  try { await api("GET /api/evm/token/:token", { params: { token: tokK } }); } catch (e) { code = e.status; }
+  const listed = (await api("GET /api/evm/launches")).launches.some((l) => l.mint === tokK);
+  const mineNow = (await api("GET /api/evm/wallet/:owner", { params: { owner: creator.address } })).created.includes(tokK);
+  rf(hf);
+  cache.clear();
+  const back = (await api("GET /api/evm/launches")).launches.some((l) => l.mint === tokK);
+  ok(code === 404 && !listed && !mineNow && back, "a hidden token leaves every list and its page is a 404; unhidden, it is back");
+}
 }
 
 if (PART === "pairs" || PART === "both") {

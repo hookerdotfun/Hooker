@@ -10,5 +10,16 @@
       "image": "/hooker-token.png",
       "createdAt": 1791154064
     }
+  ],
+  "evmCoins": [
+    {
+      "token": "0xEcc7660f54aaBA88b9cBE5aa6D823603035D5F6F",
+      "creator": "0xe22CE942FCa6E83d80eD4A4549ccbc0bc2ceA75f",
+      "name": "Hooker",
+      "symbol": "HOOKER",
+      "image": "/hooker-pons-token.png",
+      "createdAt": 1791339368,
+      "website": "https://hooker.fun"
+    }
   ]
 }
