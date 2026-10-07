@@ -21,7 +21,7 @@ contract HooksTest is Test {
 
     function setUp() public {
         vm.warp(T0); // Thu 9 Oct 2025 08:53 UTC
-        pad = new HookerLaunchpad(address(this), treasury, makeAddr("burnside"), IPonsV2Factory(address(0xBEEF)), IPonsDistributorFactory(address(0xBEEF)));
+        pad = new HookerLaunchpad(address(this), treasury, makeAddr("burnside"), IPonsV2Factory(address(0xBEEF)), IPonsDistributorFactory(address(0xBEEF)), address(new HookerToken()));
         vm.deal(creator, 100 ether);
         vm.deal(alice, 100 ether);
         vm.deal(bob, 100 ether);

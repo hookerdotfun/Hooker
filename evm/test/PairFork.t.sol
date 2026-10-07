@@ -31,7 +31,7 @@ contract PairForkTest is Test {
         string memory url = vm.envOr("RHC_RPC_URL", string(""));
         if (bytes(url).length == 0) { vm.skip(true); return; }
         vm.createSelectFork(url);
-        pad = new HookerLaunchpad(owner, treasury, burnSide, PONS, DIST);
+        pad = new HookerLaunchpad(owner, treasury, burnSide, PONS, DIST, address(new HookerToken()));
         vm.deal(creator, 1 ether);
         deal(USDG, creator, 20_000e6);
         for (uint256 i; i < buyers.length; i++) {

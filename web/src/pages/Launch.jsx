@@ -5,6 +5,7 @@ import { useWallet, cancelled } from "../lib/wallet.jsx";
 import { describeRules, sol, eth, amt, usd, pct, tzText } from "../lib/format.js";
 import { parseWallets, fillList } from "../lib/lists.js";
 import { rulesFor } from "../lib/catalog.js";
+import { useMode } from "../lib/mode.jsx";
 import PairPicker from "../components/PairPicker.jsx";
 
 const bpsInput = (v) => Math.round(Number(v) * 100);
@@ -45,8 +46,6 @@ const PONS_STEPS = [
   ["Listed on Hooker", "On Robinhood Chain. It graduates into a Pons coin."],
 ];
 const PONS_LIST_STEP = ["Fill the list", "One approval per 500 wallets, right after the launch."];
-/** Rules that only exist on Solana: hidden when launching on Pons. */
-const SOLANA_ONLY = new Set(["fomoOnly", "snipe", "antiDump", "sellScale", "chapters", "plague", "market", "dexOnly", "p2pOnly", "potato", "ping", "king", "breath", "momentum", "resonance", "coupled"]);
 /** The v3 rules (Solana only), all off: what switching to Pons resets. */
 const V3_UI_OFF = { dumpOn: false, gsOn: false, chOn: false, plagueOn: false, dexOnly: false, p2pOnly: false, potatoOn: false, pingOn: false, kingOn: false, osc: 0, hoursDst: 0, hoursSells: false, hoursHolidays: false };
 const OSC_IDS = ["", "breath", "momentum", "resonance", "coupled"];
@@ -71,7 +70,8 @@ export default function Launch() {
   const { address, evmAddress, connect, signTransaction, signTransactions, signMessage, sendEvm } = useWallet();
   const [info, setInfo] = useState(null);
   const [evmInfo, setEvmInfo] = useState(null);
-  const [platform, setPlatform] = useState(params.get("on") === "pons" ? "pons" : "pumpfun");
+  // the header switch decides the venue: Pumpfun (Solana) or Pons (Robinhood Chain); ?on=pons moves it
+  const { mode, pons, ponsV3 } = useMode();
   const [f, setF] = useState({ name: "", symbol: "", description: "", twitter: "", website: "", gradSol: null, devBuy: "0.5", feeTier: 0, pair: null, pumpFee: "", ethSize: 1, devBuyEth: "0.02", quote: "ETH" });
   const [r, setR] = useState(null);
   const [image, setImage] = useState(null);
@@ -97,15 +97,13 @@ export default function Launch() {
     }).catch((e) => setErr(e.message));
     api.evmInfo().then(setEvmInfo).catch(() => {});
   }, []);
-  const pons = (platform === "pons" || (info && !info.sizes.length)) && !!evmInfo;
-  // switching to Pons turns off the rules Robinhood Chain has no counterpart for
-  const pick = (p) => setPlatform(p);
-  // on Pons the Solana-only rules are off, however the form got there (the picker, ?on=pons, ?rule=fomoOnly, or Solana launching paused)
+  // on Pons the Solana-only rules are off, however the form got there (the switch, ?on=pons or ?rule=fomoOnly)
   useEffect(() => {
     if (!pons) return;
-    const v3On = (cur) => Object.entries(V3_UI_OFF).some(([k, v]) => cur[k] !== v);
-    setR((cur) => (cur && (cur.fomoOnly || cur.snipeMins > 0 || v3On(cur)) ? { ...cur, fomoOnly: false, snipeMins: 0, ...V3_UI_OFF } : cur));
-  }, [pons, r]);
+    // FOMO-only and the sniper-fee cap never exist on Pons; the v3 hooks do once the launchpad takes them (v6+)
+    const v3On = (cur) => !ponsV3 && Object.entries(V3_UI_OFF).some(([k, v]) => cur[k] !== v);
+    setR((cur) => (cur && (cur.fomoOnly || cur.snipeMins > 0 || v3On(cur)) ? { ...cur, fomoOnly: false, snipeMins: 0, ...(ponsV3 ? {} : V3_UI_OFF) } : cur));
+  }, [pons, r, ponsV3]);
 
   // arriving from the rule picker: scroll to the rules and flash the one that was picked
   useEffect(() => {
@@ -178,6 +176,18 @@ export default function Launch() {
     hoursDst: r.hoursOn ? Number(r.hoursDst) : 0, hoursSells: r.hoursOn && !!r.hoursSells, hoursHolidays: r.hoursOn && !!r.hoursHolidays,
   }), [r]);
   const listed = useMemo(() => (r && (r.allowlist || r.blocklist) ? parseWallets(r.listText, pons ? "rhc" : "sol") : null), [r, pons]);
+  /** The v3 hooks for a Pons launch (the token's `Ext`): the same settings, amounts in whole tokens, the King's minimum in the asset. */
+  const ponsExt = useMemo(() => (rules ? {
+    maxBuyBps: rules.maxBuyBps, maxSellBps: rules.maxSellBps, sellSmallBps: rules.sellSmallBps, sellFloorBps: rules.sellFloorBps, sellBagBps: rules.sellBagBps,
+    plagueTokens: r.plagueOn ? Number(r.plagueDose) : 0, dexOnly: !!rules.dexOnly, p2pOnly: !!rules.p2pOnly,
+    potatoOn: !!rules.potatoOn, potatoMinBps: rules.potatoMinBps, potatoColdSecs: rules.potatoColdSecs,
+    pingOn: !!rules.pingOn, pingMinBps: rules.pingMinBps, pingFreeSecs: rules.pingFreeSecs,
+    chapterStartBps: rules.chapterStartBps, chapterTokens: r.chOn ? Number(r.chVolume) * 1e6 : 0,
+    oscKind: rules.oscKind, oscPeriod: rules.oscPeriod, oscBaseBps: rules.oscBaseBps, oscFloorBps: rules.oscFloorBps, oscAmpPct: rules.oscAmpPct,
+    oscDampPermille: rules.oscDampPermille, oscCouplingPct: rules.oscCouplingPct,
+    kingOn: !!rules.kingOn, kingMin: r.kingOn ? String(Number(r.kingMin)) : "0", kingBeatPct: rules.kingBeatPct, kingDecayUnit: rules.kingDecayUnit, kingDecayN: rules.kingDecayN, kingDevCan: !!rules.kingDevCan,
+    hoursSells: !!rules.hoursSells, hoursHolidays: !!rules.hoursHolidays, hoursDst: rules.hoursDst,
+  } : {}), [rules, r]);
 
   /** A Pons launch: upload, then ONE transaction from the EVM wallet (token + rules + curve + your buy). */
   async function submitPons() {
@@ -202,7 +212,8 @@ export default function Launch() {
       const { maxWalletBps, earlySecs, earlyMaxWalletBps, rampStartBps, rampSecs, tradeGuardBps, allowlist, blocklist, hoursOn, hoursDays, hoursOpenMin, hoursCloseMin, tzOffsetMin, bundleMax, feeBaseBps, feePerSolBps, feeCapBps, burnBps, holderShareBps, holderRewards } = rules;
       const tx = await api.evmLaunchTx({ from: v.address, name: f.name.trim(), symbol: f.symbol.trim(), image: `ipfs://${cid}`, description: f.description.trim(), twitter: f.twitter.trim(), website: f.website.trim(),
         size: Number(f.ethSize), tier: Number(f.feeTier) || 0, antiSnipe: !!r.antiSnipe, devBuyEth: String(Number(f.devBuyEth || 0)), quote: unit,
-        rules: { maxWalletBps, earlySecs, earlyMaxWalletBps, rampStartBps, rampSecs, tradeGuardBps, allowlist, blocklist, hoursOn, hoursDays, hoursOpenMin, hoursCloseMin, tzOffsetMin, bundleMax, feeBaseBps, feePerEthBps: feePerSolBps, feeCapBps, burnBps, holderShareBps, holderRewards } });
+        rules: { maxWalletBps, earlySecs, earlyMaxWalletBps, rampStartBps, rampSecs, tradeGuardBps, allowlist, blocklist, hoursOn, hoursDays, hoursOpenMin, hoursCloseMin, tzOffsetMin, bundleMax, feeBaseBps, feePerEthBps: feePerSolBps, feeCapBps, burnBps, holderShareBps, holderRewards },
+        ...(ponsV3 ? { ext: ponsExt } : {}) });
       setStep("Approve the launch in your wallet…");
       const { token } = await sendEvm(tx, { onSent: () => setStep("Launching…") });
       if (!token) throw new Error("The launch landed but its token was not found. Check your wallet's activity.");
@@ -276,11 +287,12 @@ export default function Launch() {
   }
 
   if (!info || !r) return <div className="empty" style={{ marginTop: 60 }}>{err ?? "Loading…"}</div>;
-  if (!info.sizes.length && !evmInfo) return <div className="empty" style={{ marginTop: 60 }}>Launching is paused right now. Trading and graduations carry on as normal.</div>;
+  if (pons && !evmInfo) return <div className="empty" style={{ marginTop: 60 }}>Loading Pons…</div>;
+  if (!pons && !info.sizes.length) return <div className="empty" style={{ marginTop: 60 }}>Launching on Pumpfun is paused right now. Trading and graduations carry on as normal.</div>;
   const preview = pons
-    ? describeRules({ ...rules, dev: evmAddress }, { gradSol: ponsSize?.eth, antiSnipe: !!r?.antiSnipe, fees: ponsTier, chain: "rhc", unit })
+    ? describeRules({ ...rules, ...ponsExt, plagueDose: ponsExt.plagueTokens, chapterVolume: ponsExt.chapterTokens, dev: evmAddress }, { gradSol: ponsSize?.eth, antiSnipe: !!r?.antiSnipe, fees: ponsTier, chain: "rhc", unit })
     : describeRules({ ...rules, dev: address }, { gradSol: f.gradSol, antiSnipe: !!r?.antiSnipe, fees: tierNow, pair: f.pair ? { symbol: f.pair.symbol, creatorFeeBps: Math.round(Number(f.pumpFee || 0) * 100), toHolders: !!r?.holderRewards } : null });
-  const catalog = rulesFor(info).filter((x) => !pons || !SOLANA_ONLY.has(x.id));
+  const catalog = rulesFor(info, mode, ponsV3);
   const on = isOn(r);
   const chosen = catalog.filter((x) => on[x.id]);
   const groups = [...new Set(catalog.map((x) => x.group))];
@@ -303,26 +315,13 @@ export default function Launch() {
       <div className="page-head center">
         <div className="eyebrow">Launch a token</div>
         <h1 className="launch-h"><span className="grad">Hook</span> it</h1>
-        <p className="lede">Launch a token with rules built into the token itself.</p>
+        <p className="lede">{pons ? "Launch a token on Robinhood Chain with rules built into it. It graduates into a Pons coin." : "Launch a token on Solana with rules built into it. It graduates into a Pumpfun coin."}</p>
       </div>
 
       {/* locked while launching: nothing changes under the wallet's approval */}
       <fieldset className="launch-lock" disabled={!!step}>
       <div className="launch-grid">
         <div className="lcol">
-          {evmInfo && (
-            <section className="panel lsec">
-              <div className="lsec-title"><h2>Graduates into</h2></div>
-              <div className="sizes platforms">
-                <button type="button" className={`size ${!pons ? "on" : ""}`} onClick={() => pick("pumpfun")}>
-                  <b>Pumpfun</b><span>Solana · a Pumpfun coin at graduation</span>
-                </button>
-                <button type="button" className={`size ${pons ? "on" : ""}`} onClick={() => pick("pons")}>
-                  <b>Pons</b><span>Robinhood Chain · a Pons coin at graduation</span>
-                </button>
-              </div>
-            </section>
-          )}
           <Sec n="1" title="Your token">
             <div className="two">
               <Field label="Name"><input value={f.name} onChange={set("name")} maxLength={32} placeholder="Hooked Cat" /></Field>
@@ -543,7 +542,9 @@ export default function Launch() {
             {on.king && (
               <div className="setting">
                 <div className="two">
-                  <Field label="Smallest buy that takes the crown (SOL)"><input type="number" min="0.01" max="10" step="0.01" value={r.kingMin} onChange={(e) => setRule("kingMin", Number(e.target.value))} /></Field>
+                  <Field label={`Smallest buy that takes the crown (${pons ? unit : "SOL"})`} hint={pons && pair ? `Between ${Number((pair.ponsGraduation / 4200).toPrecision(2))} and ${pair.ponsGraduation} ${unit}.` : undefined}>
+                    <input type="number" min={pons && pair ? pair.ponsGraduation / 4200 : 0.01} max={pons && pair ? pair.ponsGraduation : 10} step={pons ? "any" : "0.01"} value={r.kingMin} onChange={(e) => setRule("kingMin", Number(e.target.value))} />
+                  </Field>
                   <Field label="A challenger must beat the King by (%)"><input type="number" min="0" max="50" step="1" value={r.kingBeat} onChange={(e) => setRule("kingBeat", Number(e.target.value))} /></Field>
                 </div>
                 <div className="two">
@@ -555,7 +556,7 @@ export default function Launch() {
                   {Number(r.kingDecayUnit) > 0 && <Field label="How many"><input type="number" min="1" max="60" step="1" value={r.kingDecayN} onChange={(e) => setRule("kingDecayN", Number(e.target.value))} /></Field>}
                 </div>
                 <label className="check"><input type="checkbox" checked={!!r.kingDevCan} onChange={(e) => setRule("kingDevCan", e.target.checked)} /> Your own wallet can be King</label>
-                <p className="hint" style={{ margin: 0 }}>The King earns 0.3% of every trade's value while they reign, paid in SOL from Hooker's share of the fees, not yours.</p>
+                <p className="hint" style={{ margin: 0 }}>The King earns 0.3% of every trade's value while they reign, paid in {pons ? unit : "SOL"} from Hooker's share of the fees, not yours.</p>
               </div>
             )}
             {r.osc > 0 && (

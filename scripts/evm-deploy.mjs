@@ -12,7 +12,7 @@ import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
 import { createWalletClient, createTestClient, http, encodeDeployData, formatEther, getAddress, parseEther } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { evmClient, rhc, LAUNCHPAD_ABI, LAUNCHPAD_BYTECODE, PONS_FACTORY, PONS_DISTRIBUTORS } from "../lib/evm.mjs";
+import { evmClient, rhc, LAUNCHPAD_ABI, LAUNCHPAD_BYTECODE, TOKEN_BYTECODE, PONS_FACTORY, PONS_DISTRIBUTORS } from "../lib/evm.mjs";
 import { readEvmKey } from "../server/evm-graduator.mjs";
 
 const argv = process.argv.slice(2);
@@ -53,8 +53,10 @@ if (!live) {
   bal = parseEther("1");
   console.log("  (rehearsal: the fork's copy of it was given test ETH; a fork prices gas far above mainnet)");
 }
-const data = encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [owner, treasury, recipient ?? account.address, PONS_FACTORY, PONS_DISTRIBUTORS] });
-const gas = await client.estimateGas({ account: account.address, data });
+// two deploys: the token implementation (every launch is a clone of it), then the launchpad naming it
+const padData = (impl) => encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [owner, treasury, recipient ?? account.address, PONS_FACTORY, PONS_DISTRIBUTORS, impl] });
+const implGas = await client.estimateGas({ account: account.address, data: TOKEN_BYTECODE });
+const gas = implGas + await client.estimateGas({ account: account.address, data: padData(account.address) });
 const fee = await client.getGasPrice();
 const maxFee = fee * 2n; // Robinhood Chain charges the base fee and refunds the rest; this only caps it
 const cost = ((gas * 13n) / 10n) * maxFee;
@@ -66,8 +68,15 @@ if (live) {
   rl.close();
   if (a.trim() !== "deploy") { console.log("  not deployed"); done(1); }
 }
-const hash = await wallet.sendTransaction({ data, gas: (gas * 13n) / 10n, maxFeePerGas: maxFee, maxPriorityFeePerGas: 0n });
-console.log(`  sent ${hash}`);
+const implHash = await wallet.sendTransaction({ data: TOKEN_BYTECODE, gas: (implGas * 13n) / 10n, maxFeePerGas: maxFee, maxPriorityFeePerGas: 0n });
+console.log(`  sent the token implementation ${implHash}`);
+const ri = await client.waitForTransactionReceipt({ hash: implHash, timeout: 180_000 });
+if (ri.status !== "success" || !ri.contractAddress) { console.error("  ⛔ the token implementation deploy reverted"); done(1); }
+const impl = ri.contractAddress;
+const data = padData(impl);
+const padGas = await client.estimateGas({ account: account.address, data });
+const hash = await wallet.sendTransaction({ data, gas: (padGas * 13n) / 10n, maxFeePerGas: maxFee, maxPriorityFeePerGas: 0n });
+console.log(`  sent the launchpad ${hash}`);
 const r = await client.waitForTransactionReceipt({ hash, timeout: 180_000 });
 if (r.status !== "success" || !r.contractAddress) { console.error("  ⛔ the deploy reverted"); done(1); }
 const pad = r.contractAddress;
@@ -77,7 +86,12 @@ const read = (fn) => client.readContract({ address: pad, abi: LAUNCHPAD_ABI, fun
 const code = await client.getCode({ address: pad });
 const [o, t, p, d, f, fr, grad] = await Promise.all([read("owner"), read("treasury"), read("pons"), read("distributors"), read("tokenFactory"), read("feeRecipient"), read("ponsGraduationEth")]);
 const fcode = await client.getCode({ address: f });
+const fImpl = await client.readContract({ address: f, abi: [{ type: "function", name: "implementation", stateMutability: "view", inputs: [], outputs: [{ type: "address" }] }], functionName: "implementation" });
+const icode = await client.getCode({ address: impl });
+const v3 = await client.readContract({ address: pad, abi: LAUNCHPAD_ABI, functionName: "KING_BPS" }).catch(() => null);
 const checks = [
+  [fImpl.toLowerCase() === impl.toLowerCase() && icode && icode.length > 2, `token implementation ${impl} (${(icode.length - 2) / 2} bytes), named by the token factory`],
+  [v3 === 30n, "v3 rules on (King of the Hill pays 0.3%)"],
   [code && code.length > 2, `launchpad code at ${pad} (${(code.length - 2) / 2} bytes)`],
   [o === owner, `owner ${o}`],
   [t === treasury, `treasury ${t}`],

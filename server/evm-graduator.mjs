@@ -12,7 +12,7 @@
 import { createWalletClient, http, formatEther, formatUnits, parseEther, keccak256, encodeAbiParameters, parseAbi } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { readFileSync, writeFileSync, renameSync } from "node:fs";
-import { evmEnv, evmClient, rhc, LAUNCHPAD_ABI, STATES, revertText } from "../lib/evm.mjs";
+import { evmEnv, evmClient, rhc, LAUNCHPAD_ABI, TOKEN_ABI, STATES, revertText } from "../lib/evm.mjs";
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
 const PAYOUT_BATCH = BigInt(process.env.EVM_PAYOUT_BATCH || 100);
@@ -20,6 +20,10 @@ const PAYOUT_BATCH = BigInt(process.env.EVM_PAYOUT_BATCH || 100);
 // fees from Pons's escrow and bridges them to the Solana burn wallet through Relay, which buys and burns $HOOKER
 const BURN_WALLET = process.env.BURN_WALLET || null;
 const BURN_DRY = process.env.FLYWHEEL_DRY === "1";
+// ⛔ 7 Oct 2026: the Pons side is separate from Solana. Its fees will buy and burn Hooker's OWN Pons token, never $HOOKER,
+// so the Relay bridge to the Solana burn wallet is OFF unless EVM_BRIDGE_TO_HOOKER=1. Claims still run: the ETH (and any
+// pair asset) waits in the graduation wallet until the Pons-token burn is built.
+const BRIDGE_ON = process.env.EVM_BRIDGE_TO_HOOKER === "1";
 const BURN_LEDGER = process.env.EVM_BURN_LEDGER || "data/evm-burn.json";
 const BURN_MIN_CLAIM = parseEther(process.env.EVM_BURN_MIN_CLAIM_ETH || "0.002");
 const BURN_MIN_BRIDGE = parseEther(process.env.EVM_BURN_MIN_BRIDGE_ETH || "0.01");
@@ -165,6 +169,7 @@ export function createEvmGraduator({ env = evmEnv(), key, timeout = 60_000, clie
 
   /** Relay: the asset on Robinhood Chain → SOL in the burn wallet, in seconds. ETH keeps a gas reserve. */
   async function bridge(currency, amount, sym, dec) {
+    if (!BRIDGE_ON) return;
     const q = await fetch("https://api.relay.link/quote", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({
       user: account.address, recipient: BURN_WALLET, originChainId: env.chainId, destinationChainId: SOLANA_CHAIN, originCurrency: currency, destinationCurrency: SOL, amount: amount.toString(), tradeType: "EXACT_INPUT",
     }), signal: AbortSignal.timeout(20_000) }).then((r) => r.json());
@@ -182,26 +187,62 @@ export function createEvmGraduator({ env = evmEnv(), key, timeout = 60_000, clie
     say(`burn: bridged ${formatUnits(amount, dec)} ${sym} → ${out} SOL to the burn wallet ${hash}`);
   }
   async function bridgeEth() {
+    if (!BRIDGE_ON) return;
     const bal = await client.getBalance({ address: account.address });
     const send = bal > GAS_RESERVE ? bal - GAS_RESERVE : 0n;
     if (send >= BURN_MIN_BRIDGE) await bridge("0x0000000000000000000000000000000000000000", send, "ETH", 18);
   }
   async function bridgeToken(token, sym, dec) {
+    if (!BRIDGE_ON) return;
     const bal = await client.readContract({ address: token, abi: PONS_ABI, functionName: "balanceOf", args: [account.address] });
     if (bal >= 10n ** BigInt(dec)) await bridge(token, bal, sym, dec);
   }
 
-  return { tick, burnTick, account };
+  /**
+   * King of the Hill: every King earns 0.3% of the trades during their reign, kept by the launchpad per King and asset.
+   * This pushes it to them (as the Solana graduator pays its Kings in SOL), about every minute. A v5 launchpad has no Kings.
+   */
+  const KING_MIN_PAY = parseEther(process.env.EVM_KING_MIN_PAY_ETH || "0.0001");
+  async function kingTick() {
+    const v3 = await read("KING_BPS").then(() => true, () => false);
+    if (!v3) return [];
+    const n = Number(await read("tokenCount"));
+    const tokens = await Promise.all(Array.from({ length: n }, (_, i) => read("tokens", [BigInt(i)])));
+    const flags = await Promise.all(tokens.map((t) => read("kingRule", [t])));
+    const paid = [];
+    for (let i = 0; i < tokens.length; i++) {
+      if (!flags[i]) continue;
+      const t = tokens[i];
+      const quote = (await read("launches", [t]))[18];
+      const reign = Number(await client.readContract({ address: t, abi: TOKEN_ABI, functionName: "reign" }));
+      const kings = new Set();
+      for (let r = reign; r >= 1 && r > reign - 32; r--) kings.add((await client.readContract({ address: t, abi: TOKEN_ABI, functionName: "reigns", args: [BigInt(r)] }))[0]);
+      for (const k of kings) {
+        const owed = await read("kingOwed", [k, quote]);
+        // ETH below the minimum waits for more (gas); a pair asset is paid whenever something is owed
+        if (owed === 0n || (/^0x0{40}$/i.test(quote) && owed < KING_MIN_PAY)) continue;
+        try {
+          const hash = await send("payKing", [k, quote]);
+          say(`king: paid ${formatEther(owed)} to ${k} for ${t} (${hash})`);
+          paid.push({ token: t, king: k, owed, hash });
+        } catch (e) { say(`⚠ king: paying ${k} failed: ${revertText(e)}`); }
+      }
+    }
+    return paid;
+  }
+
+  return { tick, burnTick, kingTick, account };
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const file = process.env.EVM_KEY_FILE || new URL("../keys/evm-graduator.key", import.meta.url).pathname;
   const key = readEvmKey(file);
   const g = createEvmGraduator({ key });
-  log(`evm graduator up: ${g.account.address} on ${evmEnv().launchpad}${BURN_WALLET ? ` · burn side: Pons fees → ${BURN_WALLET}${BURN_DRY ? " (DRY)" : ""}` : ""}`);
-  let lastBurn = 0;
+  log(`evm graduator up: ${g.account.address} on ${evmEnv().launchpad}${BURN_WALLET ? ` · burn side: Pons fees ${BRIDGE_ON ? `→ ${BURN_WALLET}` : "claimed and held (bridge to $HOOKER OFF)"}${BURN_DRY ? " (DRY)" : ""}` : ""}`);
+  let lastBurn = 0, lastKing = 0;
   for (;;) {
     await g.tick().catch((e) => log("tick:", e.shortMessage ?? e.message));
+    if (Date.now() - lastKing > Number(process.env.EVM_KING_MS || 60_000)) { lastKing = Date.now(); await g.kingTick().catch((e) => log("king tick:", e.shortMessage ?? e.message)); }
     if (BURN_WALLET && Date.now() - lastBurn > 600_000) { lastBurn = Date.now(); await g.burnTick().catch((e) => log("burn tick:", e.shortMessage ?? e.message)); }
     await new Promise((r) => setTimeout(r, 5_000));
   }

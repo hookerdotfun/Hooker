@@ -26,7 +26,7 @@ export const api = {
   send: (tx) => req("POST", "/api/send", { tx }),
   register: (mint) => req("POST", "/api/register", { mint }),
   pairs: () => req("GET", "/api/pairs"),
-  trades: () => req("GET", "/api/trades"),
+  trades: (chain) => req("GET", `/api/trades${chain ? `?chain=${chain}` : ""}`),
   rewards: (creator) => req("GET", `/api/rewards/${creator}`),
   claimRewards: (body) => req("POST", "/api/tx/claim-rewards", body),
   // Robinhood Chain (Pons): every call returns {chainId, to, data, value} for the EVM wallet to send

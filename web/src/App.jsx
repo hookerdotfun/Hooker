@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, NavLink, Route, Routes, useLocation, Navigate } from "react-router-dom";
+import { Link, NavLink, Route, Routes, useLocation, useNavigate, Navigate } from "react-router-dom";
 import { useWallet, WalletPicker } from "./lib/wallet.jsx";
 import { short } from "./lib/format.js";
+import { useMode } from "./lib/mode.jsx";
 import Home from "./pages/Home.jsx";
 import Launch from "./pages/Launch.jsx";
 import Token from "./pages/Token.jsx";
@@ -24,20 +25,47 @@ function Brand({ label = false }) {
   return <Link to="/" className="brand"><img src="/logo-v2-256.png" alt="Hooker" width="38" height="38" />{label && <span>Hooker</span>}</Link>;
 }
 
+/**
+ * The mode switch: Pumpfun (Solana) or Pons (Robinhood Chain). Every page follows it. On a token page of the other
+ * chain there is nothing to show in the new mode, so the switch moves to that mode's Explore.
+ */
+function ModeSwitch({ className }) {
+  const { mode, setMode } = useMode();
+  const nav = useNavigate();
+  const { pathname } = useLocation();
+  const pick = (m) => {
+    if (m === mode) return;
+    setMode(m);
+    if (pathname.startsWith("/t/")) nav("/explore");
+  };
+  return (
+    <div className={`modesw ${className ?? ""}`} role="radiogroup" aria-label="Pumpfun or Pons">
+      <button type="button" role="radio" aria-checked={mode === "pumpfun"} className={mode === "pumpfun" ? "on" : ""} onClick={() => pick("pumpfun")}>
+        <span className="modesw-dot sol" />Pumpfun
+      </button>
+      <button type="button" role="radio" aria-checked={mode === "pons"} className={mode === "pons" ? "on" : ""} onClick={() => pick("pons")}>
+        <span className="modesw-dot rhc" />Pons
+      </button>
+    </div>
+  );
+}
+
 function Nav({ className }) {
-  const { address } = useWallet();
+  const { address, evmAddress } = useWallet();
+  const { pons } = useMode();
+  const mine = pons ? evmAddress : address;
   return (
     <nav className={`navpills ${className ?? ""}`}>
       <NavLink to="/launch">Launch</NavLink>
       <NavLink to="/explore">Explore</NavLink>
       <NavLink to="/docs">Docs</NavLink>
-      {address && <NavLink to="/me">My tokens</NavLink>}
+      {mine && <NavLink to="/me">My tokens</NavLink>}
     </nav>
   );
 }
 
 /** The connected wallet, top right: a pill that opens a small menu (address with copy, My tokens, Sign out). */
-function WalletMenu({ address, evmAddress, disconnect, connect }) {
+function WalletMenu({ address, evmAddress, disconnect, connect, pons }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const ref = useRef(null);
@@ -49,7 +77,7 @@ function WalletMenu({ address, evmAddress, disconnect, connect }) {
     return () => { document.removeEventListener("pointerdown", away); window.removeEventListener("keydown", esc); };
   }, [open]);
   const copy = async (a) => { try { await navigator.clipboard.writeText(a); setCopied(a); setTimeout(() => setCopied(false), 1200); } catch {} };
-  const main = address ?? evmAddress;
+  const main = pons ? evmAddress ?? address : address ?? evmAddress;
   return (
     <div className="wmenu" ref={ref}>
       <button type="button" className={`wallet-pill ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)} aria-expanded={open}>
@@ -70,8 +98,21 @@ function WalletMenu({ address, evmAddress, disconnect, connect }) {
   );
 }
 
+const FOOT = {
+  pumpfun: {
+    blurb: "Rules are built into the token itself through Solana Token-2022 transfer hooks. Every launch graduates into a normal Pumpfun coin.",
+    links: [["Program", "https://solscan.io/account/GE5TW1AFehhNFLYiSiaAkmbTjnHTB3hdhw6ZZFBP5sLV"], ["Pumpfun", "https://pump.fun"], ["Meteora", "https://www.meteora.ag"]],
+  },
+  pons: {
+    blurb: "Rules are built into the token contract itself on Robinhood Chain. Every launch graduates into a normal Pons coin.",
+    links: [["Launchpad", "https://robinhoodchain.blockscout.com/address/0xD2e757cCA670c439525336f7DD1E66E052840Da0"], ["Pons", "https://www.ponsfamily.com"], ["Robinhood Chain", "https://robinhoodchain.blockscout.com"]],
+  },
+};
+
 export default function App() {
   const { address, evmAddress, connect, disconnect } = useWallet();
+  const { mode, pons, walletKind } = useMode();
+  const mine = pons ? evmAddress : address;
   const { pathname } = useLocation();
   useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
   return (
@@ -79,13 +120,13 @@ export default function App() {
       <div className="backdrop" />
       <div className="top-wrap">
         <header className="top">
-          <Brand />
+          <div className="top-left"><Brand /><ModeSwitch /></div>
           <Nav />
           <div className="top-right">
             <a className="xbtn" href={X_URL} target="_blank" rel="noreferrer" aria-label="Hooker on X"><XIcon /></a>
-            {address || evmAddress
-              ? <WalletMenu address={address} evmAddress={evmAddress} disconnect={disconnect} connect={connect} />
-              : <button className="btn small" onClick={() => { connect("any").catch(() => {}); }}>Connect</button>}
+            {mine
+              ? <WalletMenu address={address} evmAddress={evmAddress} disconnect={disconnect} connect={connect} pons={pons} />
+              : <button className="btn small" onClick={() => { connect(walletKind).catch(() => {}); }}>Connect</button>}
           </div>
         </header>
         <Nav className="mobile-nav" />
@@ -107,21 +148,18 @@ export default function App() {
         <div className="pfoot">
           <div className="pfoot-brand">
             <Brand label />
-            <p>Rules are built into the token itself, through Solana Token-2022 transfer hooks and on Robinhood Chain. Every launch graduates into a normal Pumpfun or Pons token.</p>
+            <p>{FOOT[mode].blurb}</p>
           </div>
           <div className="pfoot-col">
             <h4>Site</h4>
             <Link to="/launch">Launch</Link>
             <Link to="/explore">Explore</Link>
             <Link to="/docs">Docs</Link>
-            {address && <Link to="/me">My tokens</Link>}
+            {mine && <Link to="/me">My tokens</Link>}
           </div>
           <div className="pfoot-col">
             <h4>On chain</h4>
-            <a href="https://solscan.io/account/GE5TW1AFehhNFLYiSiaAkmbTjnHTB3hdhw6ZZFBP5sLV" target="_blank" rel="noreferrer">Program</a>
-            <a href="https://pump.fun" target="_blank" rel="noreferrer">Pumpfun</a>
-            <a href="https://www.meteora.ag" target="_blank" rel="noreferrer">Meteora</a>
-            <a href="https://www.ponsfamily.com" target="_blank" rel="noreferrer">Pons</a>
+            {FOOT[mode].links.map(([t, u]) => <a key={t} href={u} target="_blank" rel="noreferrer">{t}</a>)}
           </div>
           <div className="pfoot-col">
             <h4>Elsewhere</h4>

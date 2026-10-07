@@ -117,6 +117,7 @@ contract HookerLaunchpad is ReentrancyGuard {
         uint256 minTokensOut;  // the dev buy's slippage guard
         uint256 quoteIn;       // pair-asset launches: the creator's first buy, pulled from the creator (approve first)
         address quote;         // address(0) for ETH, else one of Pons's approved pair assets
+        HookerToken.Ext ext;   // the v3 rules (all off = none)
     }
 
     mapping(address => Launch) public launches;
@@ -125,6 +126,11 @@ contract HookerLaunchpad is ReentrancyGuard {
     /// Fees are kept per asset: creator → asset → amount, and asset → amount for the platform.
     mapping(address => mapping(address => uint256)) public creatorFees;
     mapping(address => uint256) public platformFees;
+    /// King of the Hill: the King earns KING_BPS of every trade's value while they reign, out of the platform's part
+    /// of the fee (as on Solana, where it comes out of Hooker's half). Kept per King and asset; anyone may push it.
+    uint256 public constant KING_BPS = 30;
+    mapping(address => bool) public kingRule;
+    mapping(address => mapping(address => uint256)) public kingOwed;
 
     event Launched(address indexed token, address indexed creator, string name, string symbol, string image, uint8 size, uint8 tier, bool antiSnipe, uint256 gradEth, address quote);
     event Trade(address indexed token, address indexed trader, bool isBuy, uint256 eth, uint256 tokens, uint256 fee, uint256 vEth, uint256 vTokens, uint256 realEth);
@@ -133,16 +139,20 @@ contract HookerLaunchpad is ReentrancyGuard {
     event Paid(address indexed token, uint256 holdersPaid, bool done);
     event CreatorFeesClaimed(address indexed creator, address quote, uint256 amount);
     event Aborted(address indexed token, string why);
+    event KingCredited(address indexed token, address indexed king, address quote, uint256 amount);
+    event KingPaid(address indexed king, address quote, uint256 amount);
 
     error Refused(string why);
 
-    constructor(address owner_, address treasury_, address feeRecipient_, IPonsV2Factory pons_, IPonsDistributorFactory distributors_) {
+    /// `tokenImpl` is a deployed HookerToken: every launch is a clone of it (deployed apart, because its code inside
+    /// this contract's would pass the size limits).
+    constructor(address owner_, address treasury_, address feeRecipient_, IPonsV2Factory pons_, IPonsDistributorFactory distributors_, address tokenImpl) {
         owner = owner_;
         treasury = treasury_;
         feeRecipient = feeRecipient_;
         pons = pons_;
         distributors = distributors_;
-        tokenFactory = new HookerTokenFactory();
+        tokenFactory = new HookerTokenFactory(tokenImpl);
     }
 
     /// ETH sent straight here (nothing of ours does) is not stranded: it counts as platform fees and can be swept.
@@ -189,6 +199,7 @@ contract HookerLaunchpad is ReentrancyGuard {
         if (bytes(a.socials.twitter).length > SOCIAL_MAX || bytes(a.socials.telegram).length > SOCIAL_MAX || bytes(a.socials.discord).length > SOCIAL_MAX
             || bytes(a.socials.website).length > SOCIAL_MAX || bytes(a.socials.farcaster).length > SOCIAL_MAX) revert Refused("a social link is too long");
         tokenFactory.validateRules(a.rules);
+        tokenFactory.validateExt(a.rules, a.ext);
         uint256 phantom = virtualEth;
         uint256 grad = ponsGraduationEth;
         if (a.quote != address(0)) {
@@ -197,7 +208,10 @@ contract HookerLaunchpad is ReentrancyGuard {
             if (phantom == 0 || grad == 0) revert Refused("not a Pons pair asset");
         }
 
-        token = tokenFactory.create(a.name, a.symbol, a.image, supply, msg.sender, treasury, a.rules);
+        // the crown's minimum is in the launch's asset: between 1/4200 of a full Pons graduation (0.001 ETH) and all of it
+        if (a.ext.kingOn && (a.ext.kingMin < grad / 4_200 || a.ext.kingMin > grad)) revert Refused("King of the Hill minimum");
+        token = tokenFactory.create(a.name, a.symbol, a.image, supply, msg.sender, treasury, a.rules, a.ext);
+        if (a.ext.kingOn) kingRule[token] = true;
         Launch storage l = launches[token];
         l.state = State.Trading;
         l.creator = msg.sender;
@@ -257,12 +271,13 @@ contract HookerLaunchpad is ReentrancyGuard {
         uint256 fee = l.state == State.Refunding ? 0 : gross * currentFeeBps(token) / 10_000;
         ethOut = gross - fee;
         if (ethOut < minEthOut) revert Refused("slippage");
+        address k = _king(token, gross);
         HookerToken(token).pull(msg.sender, amount);
         l.vEth -= gross;
         l.vTokens += amount;
         l.realEth -= gross;
         l.lastTrade = uint64(block.timestamp);
-        _takeFee(token, l, fee);
+        _takeFee(token, l, fee, gross, k);
         emit Trade(token, msg.sender, false, ethOut, amount, fee, l.vEth, l.vTokens, l.realEth);
         _send(l.quote, msg.sender, ethOut);
     }
@@ -286,7 +301,7 @@ contract HookerLaunchpad is ReentrancyGuard {
         l.vTokens -= out;
         l.realEth += net;
         l.lastTrade = uint64(block.timestamp);
-        _takeFee(token, l, fee);
+        _takeFee(token, l, fee, net + fee, _king(token, net + fee));
 
         // dynamic fee and auto burn, in tokens, on every buy (the Solana side settles these at graduation)
         HookerToken.Rules memory r = HookerToken(token).rules();
@@ -311,15 +326,41 @@ contract HookerLaunchpad is ReentrancyGuard {
         if (refund > 0) _send(l.quote, buyer, refund);
     }
 
-    /// The step's split: the creator's share of the fee, then holder share out of the platform's part.
-    function _takeFee(address token, Launch storage l, uint256 fee) internal {
+    /// King of the Hill: tells the token this trade's value (it crowns by it) and returns the King reigning as the
+    /// trade starts, who earns on it. Nothing for a token without the rule.
+    function _king(address token, uint256 value) internal returns (address) {
+        if (!kingRule[token]) return address(0);
+        HookerToken(token).noteTrade(value);
+        return HookerToken(token).king();
+    }
+
+    /// The step's split: the creator's share of the fee, then holder share and the King's share out of the platform's part.
+    function _takeFee(address token, Launch storage l, uint256 fee, uint256 value, address k) internal {
         if (fee == 0) return;
         uint256 c = fee * creatorBps[l.tier] / feeBps[l.tier];
         creatorFees[l.creator][l.quote] += c;
         uint256 p = fee - c;
         uint256 toPot = p * HookerToken(token).rules().holderShareBps / 10_000;
         l.pot += toPot;
-        platformFees[l.quote] += p - toPot;
+        p -= toPot;
+        if (k != address(0)) {
+            uint256 cut = value * KING_BPS / 10_000;
+            if (cut > p) cut = p;
+            kingOwed[k][l.quote] += cut;
+            p -= cut;
+            emit KingCredited(token, k, l.quote, cut);
+        }
+        platformFees[l.quote] += p;
+    }
+
+    /// Sends a King what they earned in one asset. Anyone may push it (the graduation service does, about every
+    /// minute); a wallet that refuses it keeps it owed.
+    function payKing(address k, address quote) external nonReentrant {
+        uint256 a = kingOwed[k][quote];
+        if (a == 0) return;
+        kingOwed[k][quote] = 0;
+        if (!_tryPay(quote, k, a)) { kingOwed[k][quote] = a; return; }
+        emit KingPaid(k, quote, a);
     }
 
     // ─── graduation ───

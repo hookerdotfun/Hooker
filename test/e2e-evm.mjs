@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { createWalletClient, createTestClient, http, parseEther, formatEther, encodeDeployData } from "viem";
 import { readFileSync } from "node:fs";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
-import { evmClient, rhc, LAUNCHPAD_ABI, LAUNCHPAD_BYTECODE, TOKEN_ABI, PONS_FACTORY, PONS_DISTRIBUTORS, createEvm } from "../lib/evm.mjs";
+import { evmClient, rhc, LAUNCHPAD_ABI, LAUNCHPAD_BYTECODE, TOKEN_ABI, TOKEN_BYTECODE, PONS_FACTORY, PONS_DISTRIBUTORS, createEvm } from "../lib/evm.mjs";
 // the burn side of the graduation service is configured from the environment at import: a Solana burn wallet, dry mode
 process.env.BURN_WALLET = "hookXkHBi86pLTAPxShbvXiQsAPuyDmnanfXDs38p8n";
 process.env.FLYWHEEL_DRY = "1";
@@ -50,7 +50,10 @@ const sendTx = async (a, t) => {
 console.log("Robinhood Chain e2e (fork of live RHC, the real Pons V2)");
 const deployer = await actor(1), owner = await actor(0), treasury = await actor(0), graduatorKey = generatePrivateKey();
 await test.setBalance({ address: privateKeyToAccount(graduatorKey).address, value: parseEther("1") });
-const hash = await walletOf(deployer).sendTransaction({ data: encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [owner.address, treasury.address, privateKeyToAccount(graduatorKey).address, PONS_FACTORY, PONS_DISTRIBUTORS] }) });
+// the token implementation first: every launch is a clone of it
+const implHash = await walletOf(deployer).sendTransaction({ data: TOKEN_BYTECODE });
+const tokenImpl = (await client.waitForTransactionReceipt({ hash: implHash })).contractAddress;
+const hash = await walletOf(deployer).sendTransaction({ data: encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [owner.address, treasury.address, privateKeyToAccount(graduatorKey).address, PONS_FACTORY, PONS_DISTRIBUTORS, tokenImpl] }) });
 const pad = (await client.waitForTransactionReceipt({ hash })).contractAddress;
 const deployBlock = await client.getBlockNumber();
 ok(!!pad, `launchpad deployed at ${pad}`);
@@ -64,11 +67,12 @@ const api = (route, args = {}) => evm.routes[route]({ params: {}, query: new URL
 // ⛔ a fork goes stale once its block ages out of the RPC's state ("historical state is not available"), and only accounts
 // touched before that are cached: every Pons contract the flows need is read once now, and the run is split in two parts
 // (`E2E_PART=eth` | `pairs`, default both) so each fork stays young.
-const PART = process.env.E2E_PART ?? "both"; // eth | burn | pairs | both
+const PART = process.env.E2E_PART ?? "both"; // eth | burn | v3 | pairs | both
 const creator = await actor(5);
 for (const a of ["0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e", "0xe33E9E479dF8802cb0866d5d05258bEc4cF62948", "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044", "0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e",
   "0x42df2a798f82289E177311362e8f5ccC45c1219c", "0x267444D099b10fB5Ed7c3Cc7B7c767AdcA574952", "0x3711ceA4feaDE896C913C68F01Eda97Cb06D1A42", "0xC7819B64A1dAECD7eC19856d026cb14EfBd89046",
   "0xf5695117b99B6f6401e67d4195BD653628176C6C", "0x70e95CC5f03DB2906081E7a8D16e4C4209291507", "0x8366a39CC670B4001A1121B8F6A443A643e40951", "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"]) await client.getCode({ address: a }).catch(() => {});
+process.env.EVM_KING_MIN_PAY_ETH ??= "0"; // pay the e2e King's small earnings at once
 const g = createEvmGraduator({ env, key: graduatorKey, client, timeout: 180_000, log: (m) => console.log(`    ${m}`) });
 const settle = async (tok) => { for (let i = 0; i < 6; i++) { await g.tick(); cache.clear(); const st = (await api("GET /api/evm/token/:token", { params: { token: tok } })).status; if (st === "paid") return; await new Promise((r) => setTimeout(r, 5_000)); } };
 
@@ -189,7 +193,9 @@ const escrow = await client.readContract({ address: PONS_FACTORY, abi: PONS_FACT
 const owed = await client.readContract({ address: escrow, abi: [{ type: "function", name: "balanceOf", stateMutability: "view", inputs: [{ type: "address" }], outputs: [{ type: "uint256" }] }], functionName: "balanceOf", args: [privateKeyToAccount(graduatorKey).address] });
 const burnLedger = JSON.parse(readFileSync(process.env.EVM_BURN_LEDGER, "utf8"));
 ok(owed > 0n && burnLedger.rows.some((r) => r.kind === "claim" && r.dry), `the coin's fees reached Pons's escrow for the burn side (${formatEther(owed)} ETH owed) and the keeper simulated the claim (dry)`);
-ok(burnLedger.rows.some((r) => r.kind === "bridge" && r.dry && Number(r.sol) > 0), `and quoted the bridge to the Solana burn wallet through Relay: ${burnLedger.rows.find((r) => r.kind === "bridge")?.eth} ETH → ${burnLedger.rows.find((r) => r.kind === "bridge")?.sol} SOL (dry)`);
+// ⛔ 7 Oct 2026: the Pons side burns its own token, never $HOOKER, so the bridge to Solana is off unless EVM_BRIDGE_TO_HOOKER=1
+if (process.env.EVM_BRIDGE_TO_HOOKER === "1") ok(burnLedger.rows.some((r) => r.kind === "bridge" && r.dry && Number(r.sol) > 0), `and quoted the bridge to the Solana burn wallet through Relay: ${burnLedger.rows.find((r) => r.kind === "bridge")?.eth} ETH → ${burnLedger.rows.find((r) => r.kind === "bridge")?.sol} SOL (dry)`);
+else ok(!burnLedger.rows.some((r) => r.kind === "bridge"), "nothing is bridged to the Solana $HOOKER burn: the claimed fees wait in the graduation wallet for the Pons token's own burn");
 
 
 // ── Pons stops taking launches: a full curve is called off by a stranger and every holder sells back, fee-free ──
@@ -230,6 +236,42 @@ await createWalletClient({ account: ponsOwner, chain: rhc(4663, URL_), transport
 await test.stopImpersonatingAccount({ address: ponsOwner });
 
 }
+if (PART === "v3" || PART === "both") {
+console.log("  v3 rules (the same 14 as Solana's v3, minus FOMO-only and the sniper-fee cap)");
+const info3 = await api("GET /api/evm/info");
+ok(info3.v3 === true, "the launchpad takes v3 rules");
+let w3 = null;
+try { await api("POST /api/evm/tx/launch", { body: { from: creator.address, name: "Bad3", symbol: "BAD3", ext: { plagueTokens: 1000, dexOnly: true } } }); } catch (e) { w3 = e.message; }
+ok(/plague/.test(w3 ?? ""), `a bad v3 combination is refused before the wallet opens: "${w3}"`);
+const lt3 = await api("POST /api/evm/tx/launch", { body: { from: creator.address, name: "Hook King", symbol: "HKING", image: "https://hooker.fun/api/img/bafkreitest", size: 0, tier: 0, devBuyEth: "0.01",
+  ext: { kingOn: true, kingMin: "0.01", kingBeatPct: 10, potatoOn: true, potatoMinBps: 10, potatoColdSecs: 120, maxSellBps: 500 } } });
+await sendTx(creator, lt3);
+cache.clear();
+const tokK = (await api("GET /api/evm/launches")).launches.find((l) => l.symbol === "HKING")?.mint;
+const s31 = await api("GET /api/evm/token/:token", { params: { token: tokK } });
+ok(s31.rules.kingOn && s31.rules.kingMin === 0.01 && s31.rules.potatoOn && s31.rules.maxSellBps === 500, "its v3 rules read back from the token (the King's minimum in ETH)");
+const [k1, k2] = await Promise.all([actor(2), actor(2)]);
+await sendTx(k1, await api("POST /api/evm/tx/buy", { body: { token: tokK, eth: "0.05" } }));
+cache.clear();
+const s32 = await api("GET /api/evm/token/:token", { params: { token: tokK } });
+ok(s32.live?.king?.king === k1.address && s32.live?.potato?.holder === k1.address && Math.abs(s32.live.king.bar - 0.055) < 1e-9,
+  `live: ${k1.address.slice(0, 8)}… is King (bar ${s32.live?.king?.bar} ETH) and holds the potato`);
+const sell3 = await api("POST /api/evm/tx/sell", { body: { token: tokK, amount: parseEther("1000").toString() } });
+const sim3 = await api("POST /api/evm/simulate", { body: { from: k1.address, ...sell3 } });
+ok(!sim3.ok && /hot potato/.test(sim3.error), `the potato holder's sell is refused, in words: "${sim3.error}"`);
+await sendTx(k2, await api("POST /api/evm/tx/buy", { body: { token: tokK, eth: "0.04" } }));
+const owed3 = await client.readContract({ address: pad, abi: LAUNCHPAD_ABI, functionName: "kingOwed", args: [k1.address, "0x0000000000000000000000000000000000000000"] });
+ok(owed3 === (parseEther("0.04") * 30n) / 10_000n, `the King earned 0.3% of the next trade: ${formatEther(owed3)} ETH`);
+const kb = await client.getBalance({ address: k1.address });
+const paid3 = await g.kingTick();
+ok(paid3.some((x) => x.king === k1.address) && (await client.getBalance({ address: k1.address })) - kb === owed3, "the graduation service paid the King in ETH");
+// the potato moved to k2 (a big enough buy); k1 may sell now
+await sendTx(k1, await api("POST /api/evm/tx/sell", { body: { token: tokK, amount: parseEther("1000").toString() } }));
+cache.clear();
+const s33 = await api("GET /api/evm/token/:token", { params: { token: tokK } });
+ok(s33.live.potato.holder === k2.address && s33.live.king.king === null && s33.live.king.hall[0].ended, "after the sell: the potato is k2's, the King gave up the crown, the hall shows the reign ended");
+}
+
 if (PART === "pairs" || PART === "both") {
 // ── a launchpad priced in USDG (a Pons pair asset): the curve takes USDG, the coin graduates paired with USDG ──
 console.log("── USDG pair launchpad");

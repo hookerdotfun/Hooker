@@ -7,6 +7,9 @@ solc = "0.8.24"
 optimizer = true
 optimizer_runs = 200
 via_ir = true
+# each call in a test is its own transaction, as on chain: the token's transient storage (ping pong's one-turn-per-
+# transaction flag, King of the Hill's trade value) must clear between calls the way it clears between transactions
+isolate = true
 remappings = [
   "forge-std/=lib/forge-std/src/",
   "openzeppelin-contracts/=lib/openzeppelin-contracts/",

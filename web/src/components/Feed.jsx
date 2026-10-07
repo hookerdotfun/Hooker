@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api.js";
+import { useMode, inMode } from "../lib/mode.jsx";
 
 // ── the live trades box (real chain data only; the old simulated feed is gone) ─────────────────────────
 
@@ -36,17 +37,20 @@ const toRow = (t) => ({
   why: t.ok ? null : t.why,
 });
 export function Feed() {
+  const { chain, venue } = useMode();
   const [data, setData] = useState(null);
   useEffect(() => {
     let live = true;
-    const load = () => api.trades().then((d) => { if (live) setData(d); }).catch(() => {});
+    setData(null);
+    const load = () => api.trades(chain).then((d) => { if (live) setData(d); }).catch(() => {});
     load();
     const poll = () => { if (!document.hidden) load(); };
     const t = setInterval(poll, 10_000);
     document.addEventListener("visibilitychange", poll);
     return () => { live = false; clearInterval(t); document.removeEventListener("visibilitychange", poll); };
-  }, []);
-  const rows = (data?.trades ?? []).map(toRow);
+  }, [chain]);
+  // an older API mixes both chains: keep this mode's rows either way
+  const rows = (data?.trades ?? []).filter((t) => inMode(t, chain)).map(toRow);
   const refused = rows.filter((r) => !r.ok).length;
   return (
     <div className="feed">
@@ -56,7 +60,7 @@ export function Feed() {
       </div>
       <div className="feed-rows">
         {rows.map((r, i) => <Row key={`${r.id}:${i}`} r={r} />)}
-        {data && rows.length === 0 && <div className="feed-empty">{data.tokens ? "No trades on the live tokens yet. Each one shows up here as it lands." : "No token is trading right now. Every trade on a Hooker token shows up here as it lands."}</div>}
+        {data && rows.length === 0 && <div className="feed-empty">{data.tokens ? "No trades on the live tokens yet. Each one shows up here as it lands." : `No ${venue} token is trading on Hooker right now. Every trade shows up here as it lands.`}</div>}
         {!data && <div className="feed-empty">Reading the chain…</div>}
       </div>
     </div>

@@ -288,4 +288,44 @@ export const RULES = [
 
 /** The v3 hook rules: shown only once the upgraded hook is live (GET /api/info `v3Rules`). */
 const V3_IDS = new Set(["antiDump", "sellScale", "chapters", "plague", "market", "dexOnly", "p2pOnly", "potato", "ping", "king", "breath", "momentum", "resonance", "coupled"]);
-export const rulesFor = (info) => RULES.filter((r) => (!r.gated || info?.fomoOnly) && (!V3_IDS.has(r.id) || info?.v3Rules));
+/**
+ * Rules Robinhood Chain has no counterpart for, never offered in Pons mode: FOMO-only (no FOMO app there) and the
+ * sniper-fee cap (its sequencer ignores priority fees and has no tips). Every other hook exists on both chains.
+ */
+export const PONS_NEVER = new Set(["fomoOnly", "snipe"]);
+
+/** Wording that names one venue, per mode. Anything not listed reads the same in both. */
+const WORDING = {
+  pumpfun: {
+    fee: { d: "Bigger buys pay more. Each buy pays a base share plus a little per SOL, up to a cap, taken in tokens.", chips: ["base + per SOL", "capped", "from public history"] },
+    holderRewards: { d: "After graduation, the coin's creator fees go to its holders through Pumpfun's holder rewards. Without this hook they buy and burn $HOOKER.", demo: [{ who: "Pumpfun", a: "Creator fees on every trade", ok: true, why: "paid to holders" }] },
+  },
+  pons: {
+    fee: { d: "Bigger buys pay more. Each buy pays a base share plus a little per ETH, up to a cap, taken in tokens.", chips: ["base + per ETH", "capped", "taken on every buy"] },
+    share: { d: "Part of the platform's trading fees buys extra coins for holders at graduation, shared by how much they held and for how long." },
+    king: { chips: ["0.3% of every trade", "paid in ETH", "bar halves over time"] },
+    holderRewards: { s: "The coin's creator fees go to its holders instead of the burn.", d: "After graduation, the coin's creator fees go to its holders through Pons's holder fee sharing, paid out by Pons automatically. Without this hook they buy and burn Hooker’s Pons token.", demo: [{ who: "Pons", a: "Creator fees on every trade", ok: true, why: "paid to holders" }] },
+  },
+};
+// an example amount in SOL, shown in ETH in Pons mode (about the same dollars)
+const solToEth = (text) => String(text).replace(/(\d+(?:\.\d+)?) SOL\b/g, (_, n) => `${Number((Number(n) * 0.06).toPrecision(2))} ETH`)
+  .replace("block 301,442,118", "block 82,014,207");
+// example Solana wallets ("Qm4d…Lk2s") as Robinhood Chain ones ("0x3f2a…91c4"), the same one every time
+const HEX = "0123456789abcdef";
+const evmWho = (text) => String(text).replace(/\b[1-9A-HJ-NP-Za-km-z]{4}…[1-9A-HJ-NP-Za-km-z]{4}\b/g, (w) =>
+  `0x${[...w.replace("…", "")].map((c, i) => HEX[(c.charCodeAt(0) * (i + 7)) % 16]).join("").replace(/^(.{4})(.{4})$/, "$1…$2")}`);
+const inEth = (t) => String(t).replace(/\bin SOL\b/g, "in ETH");
+const ponsDemo = (demo) => demo.map((d) => ({ ...d, who: evmWho(d.who), a: inEth(evmWho(solToEth(d.a))), why: d.why && inEth(evmWho(solToEth(d.why))) }));
+
+/**
+ * The rules a creator can pick in this mode ("pumpfun" or "pons"), worded for its chain. The newer (v3) hooks show
+ * once the chain takes them: Solana's upgraded hook (`info.v3Rules`), or a v6+ Pons launchpad (`ponsV3`).
+ */
+export const rulesFor = (info, mode = "pumpfun", ponsV3 = false) => RULES
+  .filter((r) => (!r.gated || info?.fomoOnly) && (!V3_IDS.has(r.id) || (mode === "pons" ? ponsV3 : info?.v3Rules)))
+  .filter((r) => mode !== "pons" || !PONS_NEVER.has(r.id))
+  .map((r) => {
+    const w = WORDING[mode]?.[r.id] ?? {};
+    const out = { ...r, ...w };
+    return mode === "pons" && !w.demo ? { ...out, demo: ponsDemo(out.demo) } : out;
+  });

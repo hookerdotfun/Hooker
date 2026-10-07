@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { createWalletClient, createTestClient, http, parseEther, encodeDeployData } from "viem";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
-import { evmClient, rhc, LAUNCHPAD_ABI, LAUNCHPAD_BYTECODE, PONS_FACTORY, PONS_DISTRIBUTORS } from "../lib/evm.mjs";
+import { evmClient, rhc, LAUNCHPAD_ABI, LAUNCHPAD_BYTECODE, TOKEN_BYTECODE, PONS_FACTORY, PONS_DISTRIBUTORS } from "../lib/evm.mjs";
 
 const PORT = 8546, URL_ = `http://127.0.0.1:${PORT}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -28,8 +28,11 @@ const client = evmClient(URL_, 4663, { timeout: 180_000 });
 const test = createTestClient({ chain: rhc(4663, URL_), mode: "anvil", transport: http(URL_) });
 const fresh = async (eth) => { const k = generatePrivateKey(), a = privateKeyToAccount(k); await test.setBalance({ address: a.address, value: parseEther(String(eth)) }); return { k, a }; };
 const deployer = await fresh(1), treasury = await fresh(0), grad = await fresh(5);
-const hash = await createWalletClient({ account: deployer.a, chain: rhc(4663, URL_), transport: http(URL_) }).sendTransaction({
-  data: encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [deployer.a.address, treasury.a.address, grad.a.address, PONS_FACTORY, PONS_DISTRIBUTORS] }),
+const dw = createWalletClient({ account: deployer.a, chain: rhc(4663, URL_), transport: http(URL_) });
+// the token implementation first: every launch is a clone of it
+const tokenImpl = (await client.waitForTransactionReceipt({ hash: await dw.sendTransaction({ data: TOKEN_BYTECODE }) })).contractAddress;
+const hash = await dw.sendTransaction({
+  data: encodeDeployData({ abi: LAUNCHPAD_ABI, bytecode: LAUNCHPAD_BYTECODE, args: [deployer.a.address, treasury.a.address, grad.a.address, PONS_FACTORY, PONS_DISTRIBUTORS, tokenImpl] }),
 });
 const r = await client.waitForTransactionReceipt({ hash });
 const dir = new URL("../data/evm-local/", import.meta.url).pathname;

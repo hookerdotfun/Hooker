@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { rulesFor } from "../lib/catalog.js";
+import { useMode } from "../lib/mode.jsx";
 import { Row } from "./Feed.jsx";
 
 // ── the rule picker ───────────────────────────────────────────────────────────────────────────
 export default function Picker({ info }) {
-  const rules = rulesFor(info);
+  const { mode, ponsV3 } = useMode();
+  const rules = rulesFor(info, mode, ponsV3);
   const [id, setId] = useState(rules[0].id);
   const r = rules.find((x) => x.id === id) ?? rules[0];
   const groups = [...new Set(rules.map((x) => x.group))];

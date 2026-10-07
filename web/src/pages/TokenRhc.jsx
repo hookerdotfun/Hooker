@@ -181,6 +181,39 @@ function Launched({ t, image, onClose }) {
   );
 }
 
+/** What the hooks that remember something show right now (GET /api/evm/token/:token `live`), as on a Solana token page. */
+function LivePanel({ t }) {
+  const { live, rules } = t;
+  const { evmAddress } = useWallet();
+  const you = (w) => (w && evmAddress && w.toLowerCase() === evmAddress.toLowerCase() ? "you" : w ? short(w) : null);
+  const now = live.chainTime;
+  const left = (at) => (at && at > now ? duration(at - now) : null);
+  const n = (v) => Number(v).toLocaleString(undefined, { maximumFractionDigits: 0 });
+  const rows = [];
+  if (live.potato) rows.push(["Hot potato", live.potato.holder ? `${you(live.potato.holder)} holds it${left(live.potato.coldAt) ? `, cold in ${left(live.potato.coldAt)}` : live.potato.coldAt ? ", gone cold" : ""}` : "nobody yet"]);
+  if (live.ping) rows.push(["Ping pong", live.ping.next === "any" ? "either side can go" : `${live.ping.next === "buy" ? "buyers" : "sellers"}' turn${left(live.ping.freeAt) ? `, free for both in ${left(live.ping.freeAt)}` : live.ping.freeAt ? ", free for both now" : ""}`]);
+  if (live.chapters) rows.push(["Chapters", `chapter ${live.chapters.chapter}: max ${live.chapters.capBps / 100}% per wallet, doubles at ${n(live.chapters.nextAt)} tokens traded (${n(live.chapters.volume)} so far)`]);
+  if (live.oscCapBps != null) rows.push([["", "Breathing cap", "Momentum", "Resonance", "Coupled resonator"][rules.oscKind], `one buy can take up to ${(live.oscCapBps / 100).toFixed(2)}% of supply right now`]);
+  const k = live.king;
+  const a = (v) => amt(v, k?.unit ?? "ETH", 4);
+  if (k) rows.push(["King of the Hill", k.king ? `${you(k.king)} reigns with a ${a(k.bid)} buy, for ${duration(Math.max(0, now - k.since))}. To take the crown: ${a(k.bar)} in one buy.` : `the throne is empty: ${a(k.bar)} in one buy takes it.`]);
+  return (
+    <section className="panel">
+      <h3>Right now</h3>
+      <ul className="rules">{rows.map(([h, d]) => <li key={h}><div><b>{h}</b>{d}</div></li>)}</ul>
+      {k?.hall?.length > 0 && (
+        <>
+          <h3 style={{ marginTop: 18 }}>Hall of Kings</h3>
+          <ul className="rules">{k.hall.map((r) => (
+            <li key={r.reign}><div><b>{`#${r.reign} ${you(r.king) ?? "?"}`}{r.ended ? "" : " (reigning)"}</b>{`${a(r.value)} traded during the reign, earning ${a(r.earned)}.`}</div></li>
+          ))}</ul>
+          <p className="hint">The King earns {k.cutBps / 100}% of every trade's value while they reign, paid in {k.unit} about every minute.</p>
+        </>
+      )}
+    </section>
+  );
+}
+
 export default function TokenRhc({ mint }) {
   const [search] = useSearchParams();
   const location = useLocation(), navTo = useNavigate();
@@ -280,6 +313,7 @@ export default function TokenRhc({ mint }) {
             <ul className="rules">{ruleText.map((x) => <li key={x.t}><div><b>{x.t}</b>{x.d}</div></li>)}</ul>
             <p className="hint">Enforced by the token itself on Robinhood Chain. Nobody can change them.</p>
           </section>
+          {t.live && <LivePanel t={t} />}
           <Trades t={t} />
         </div>
         <aside className="sticky">

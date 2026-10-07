@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../lib/api.js";
 import TokenCard from "../components/TokenCard.jsx";
+import { useMode, inMode } from "../lib/mode.jsx";
 
 const SORTS = {
   newest: { label: "Newest", fn: (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) },
@@ -31,6 +32,7 @@ function Section({ title, blurb, rows, sorts, sort, setSort, empty, loading }) {
 }
 
 export default function Explore() {
+  const { chain, venue, pons } = useMode();
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [q, setQ] = useState("");
@@ -49,9 +51,9 @@ export default function Explore() {
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return (data ?? []).filter((l) => !needle || [l.meta?.name, l.name, l.meta?.symbol, l.symbol, l.mint].some((v) => v && String(v).toLowerCase().includes(needle)));
-  }, [data, q]);
-  // ⚠ a launch appears in exactly one list: still on our curve, or graduated into pump.fun
+    return (data ?? []).filter((l) => inMode(l, chain)).filter((l) => !needle || [l.meta?.name, l.name, l.meta?.symbol, l.symbol, l.mint].some((v) => v && String(v).toLowerCase().includes(needle)));
+  }, [data, q, chain]);
+  // ⚠ a launch appears in exactly one list: still on our curve, or graduated into pump.fun or Pons
   // a coin launched straight on pump.fun (our $HOOKER) is "on the curve" until pump.fun's own curve fills
   const curving = (l) => l.status === "trading";
   const onCurve = filtered.filter(curving);
@@ -63,7 +65,7 @@ export default function Explore() {
       <div className="chead page">
         <div className="eyebrow">Explore</div>
         <h1><span className="grad">Dashboard</span></h1>
-        <p className="chead-sub">Launch with any combination of hooks and graduate into a normal Pumpfun or Pons token.</p>
+        <p className="chead-sub">{pons ? "Launch on Robinhood Chain with any combination of hooks and graduate into a normal Pons token." : "Launch on Solana with any combination of hooks and graduate into a normal Pumpfun token."}</p>
         <label className="search wide">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="7" /><path d="m20 20-3.5-3.5" /></svg>
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search name, ticker or address" />
@@ -71,13 +73,13 @@ export default function Explore() {
       </div>
       {err && !data && <p className="err center">{err}</p>}
 
-      <Section title="Graduated" blurb="Tokens that graduated to Pumpfun or Pons."
+      <Section title="Graduated" blurb={`Tokens that graduated to ${venue}.`}
         rows={graduated} sorts={["cap", "newest"]} sort={gradSort} setSort={setGradSort} loading={loading}
-        empty={q ? "Nothing matches." : "No token has graduated yet."} />
+        empty={q ? "Nothing matches." : `No token has graduated to ${venue} yet.`} />
 
-      <Section title="On the curve" blurb="Tokens still climbing toward Pumpfun or Pons."
+      <Section title="On the curve" blurb={`Tokens still climbing toward ${venue}.`}
         rows={onCurve} sorts={["newest", "cap", "progress"]} sort={curveSort} setSort={setCurveSort} loading={loading}
-        empty={data?.length ? "Nothing matches." : "Nothing has been launched yet."} />
+        empty={q ? "Nothing matches." : graduated.length ? `No ${venue} token is on the curve right now.` : `No ${venue} token has been launched yet.`} />
 
       <div className="more" style={{ marginTop: 40 }}><Link to="/launch" className="btn green">Launch a token <span className="arrow">→</span></Link></div>
     </div>

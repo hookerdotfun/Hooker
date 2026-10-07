@@ -3,5 +3,6 @@
 import { readFileSync, writeFileSync } from "node:fs";
 const out = (n) => JSON.parse(readFileSync(new URL(`../evm/out/${n}.sol/${n}.json`, import.meta.url)));
 const pad = out("HookerLaunchpad"), tok = out("HookerToken");
-writeFileSync(new URL("../lib/evm-abi.json", import.meta.url), JSON.stringify({ launchpad: pad.abi, token: tok.abi, launchpadBytecode: pad.bytecode.object }) + "\n");
+// the token implementation's bytecode too: every launchpad needs one deployed first (its launches are clones of it)
+writeFileSync(new URL("../lib/evm-abi.json", import.meta.url), JSON.stringify({ launchpad: pad.abi, token: tok.abi, launchpadBytecode: pad.bytecode.object, tokenBytecode: tok.bytecode.object }) + "\n");
 console.log("lib/evm-abi.json written");

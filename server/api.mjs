@@ -370,25 +370,34 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
      * that landed, and refusals that landed as failed transactions (a bot or app that skips the dry run), with the
      * hook's reason. One read per token every 20 s at most, shared by every visitor; each transaction read once.
      */
-    "GET /api/trades": async () => cached("trades", 10_000, async () => {
-      const live = listLaunches(db, { limit: 50 }).filter((l) => shown(l) && l.status === "trading").slice(0, 10);
-      const rows = [];
-      let reads = 0;
-      for (const l of live) {
-        const sigs = await cached(`sigs:${l.pool}`, 20_000, () => conn.getSignaturesForAddress(new PublicKey(l.pool), { limit: 8 }, "confirmed")).catch(() => []);
-        for (const s of sigs) {
-          const k = `trade:${s.signature}`;
-          if (!cache.has(k)) { if (reads >= 16) continue; reads++; }
-          // a read that failed (RPC error, an odd transaction) is remembered as "nothing" for a minute, not retried every poll
-          const row = await cached(k, cache.get(k)?.value?.failed ? 60_000 : 86_400_000, () => readTrade(s, l).catch(() => ({ failed: true })));
-          if (row && !row.failed) rows.push(row);
+    /** The live trades box. `?chain=sol|rhc` keeps one chain (the site's Pumpfun or Pons mode); none mixes both. */
+    "GET /api/trades": async ({ query } = {}) => {
+      const c = typeof query?.get === "function" ? query.get("chain") : query?.chain;
+      const want = c === "sol" || c === "rhc" ? c : null;
+      const solRows = () => cached("trades:sol", 10_000, async () => {
+        const live = listLaunches(db, { limit: 50 }).filter((l) => shown(l) && l.status === "trading").slice(0, 10);
+        const rows = [];
+        let reads = 0;
+        for (const l of live) {
+          const sigs = await cached(`sigs:${l.pool}`, 20_000, () => conn.getSignaturesForAddress(new PublicKey(l.pool), { limit: 8 }, "confirmed")).catch(() => []);
+          for (const s of sigs) {
+            const k = `trade:${s.signature}`;
+            if (!cache.has(k)) { if (reads >= 16) continue; reads++; }
+            // a read that failed (RPC error, an odd transaction) is remembered as "nothing" for a minute, not retried every poll
+            const row = await cached(k, cache.get(k)?.value?.failed ? 60_000 : 86_400_000, () => readTrade(s, l).catch(() => ({ failed: true })));
+            if (row && !row.failed) rows.push({ chain: "sol", ...row });
+          }
         }
-      }
-      // Robinhood Chain trades (Pons launches) in the same feed
-      if (evm) rows.push(...(await evm.recentTrades(12).catch(() => [])));
-      rows.sort((a, b) => b.time - a.time);
-      return { trades: rows.slice(0, 12), tokens: live.length + (evm ? (await evm.listAll().catch(() => [])).filter((l) => l.status === "trading").length : 0) };
-    }),
+        return { rows, tokens: live.length };
+      });
+      // Robinhood Chain trades (Pons launches)
+      const rhcRows = () => cached("trades:rhc", 10_000, async () => evm
+        ? { rows: await evm.recentTrades(12).catch(() => []), tokens: (await evm.listAll().catch(() => [])).filter((l) => l.status === "trading").length }
+        : { rows: [], tokens: 0 });
+      const parts = await Promise.all([want !== "rhc" ? solRows() : null, want !== "sol" ? rhcRows() : null]);
+      const rows = parts.flatMap((p) => p?.rows ?? []).sort((a, b) => b.time - a.time);
+      return { trades: rows.slice(0, 12), tokens: parts.reduce((n, p) => n + (p?.tokens ?? 0), 0) };
+    },
 
     "GET /api/launches": async () => {
       const ls = listLaunches(db, { limit: 200 }).filter(shown);

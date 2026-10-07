@@ -16,11 +16,11 @@ It runs on two chains:
 
 Every Solana token address (the Hooker token and its Pumpfun coin) ends in `hook`.
 
-**The burn.** Every coin that graduates names Hooker's burn wallet as its creator, so the coin's creator fees on Pumpfun or Pons buy $HOOKER and burn it, forever (`lib/flywheel.mjs`; Pons fees are bridged to Solana through Relay). A creator can route a coin's fees to its holders instead with the "Creator fees to holders" hook. Every claim and burn is a public transaction, listed on hooker.fun.
+**The burn.** Every Pumpfun coin that graduates names Hooker's burn wallet as its creator, so its creator fees buy $HOOKER and burn it, forever (`lib/flywheel.mjs`). The two chains are separate: a Pons coin's creator fees go to Hooker's graduation wallet on Robinhood Chain, for Hooker's own Pons token, never $HOOKER. A creator can route a coin's fees to its holders instead with the "Creator fees to holders" hook. Every claim and burn is a public transaction.
 
 ## Hooks
 
-All hooks are off by default; a creator combines any of them.
+All hooks are off by default; a creator combines any of them. Both chains have every hook except two that only exist on Solana.
 
 | Hook | What it does |
 |---|---|
@@ -29,22 +29,22 @@ All hooks are off by default; a creator combines any of them.
 | Launch window | A tighter cap for the first minutes |
 | Rising max per wallet | The cap starts small and rises on a timer |
 | Trade guard | No single trade can move more than a set share of supply |
-| Sniper-fee cap | Buys paying sniper-sized priority fees or tips are refused at launch (Solana) |
+| Sniper-fee cap | Buys paying sniper-sized priority fees or tips are refused at launch (Solana only: Robinhood Chain's sequencer ignores priority fees and has no tips) |
 | Anti-bundle | Only a few buys can land in one block |
 | Anti-snipe fee | The trading fee starts at 50% and falls to 1% over two minutes |
-| FOMO only | Only the FOMO app can buy; selling works anywhere (Solana) |
-| Trading hours | Trades only on chosen days and hours; on Solana it can follow US or European daylight saving on chain and close sells too |
-| Market hours | Trades like a stock: Monday to Friday, 9:30 to 16:00 New York time, closed on US market holidays (Solana) |
-| Anti-dump caps | Separate caps on one buy and one sell, the creator's sells included (Solana) |
-| Graduated sell caps | The bigger the bag, the smaller one sell can be, down to a floor (Solana) |
-| Chapters | Max per wallet starts small and doubles every chapter of volume (Solana) |
-| Plague | A wallet can only buy once a holder has sent it some (Solana) |
-| DEX-only | No wallet-to-wallet sends: every move is a trade with the curve (Solana) |
-| P2P-only | Only the creator buys from the curve and nobody sells to it; tokens move wallet to wallet (Solana) |
-| Hot potato | Whoever bought last cannot sell or send until another wallet buys (Solana) |
-| Ping pong | Buys and sells take turns; one transaction cannot take both turns (Solana) |
-| King of the Hill | The biggest buy holds the crown and earns 0.3% of every trade's value while it reigns, paid in SOL from Hooker's share of the fees (Solana) |
-| Breathing cap · Momentum · Resonance · Coupled resonator | The per-buy cap is driven by an oscillator: a fixed cycle, or one that every buy kicks (Solana) |
+| FOMO only | Only the FOMO app can buy; selling works anywhere (Solana only: FOMO does not trade on Robinhood Chain) |
+| Trading hours | Trades only on chosen days and hours; it can follow US or European daylight saving on chain and close sells too |
+| Market hours | Trades like a stock: Monday to Friday, 9:30 to 16:00 New York time, closed on US market holidays |
+| Anti-dump caps | Separate caps on one buy and one sell, the creator's sells included |
+| Graduated sell caps | The bigger the bag, the smaller one sell can be, down to a floor |
+| Chapters | Max per wallet starts small and doubles every chapter of volume |
+| Plague | A wallet can only buy once a holder has sent it some |
+| DEX-only | No wallet-to-wallet sends: every move is a trade with the curve |
+| P2P-only | Only the creator buys from the curve and nobody sells to it; tokens move wallet to wallet |
+| Hot potato | Whoever bought last cannot sell or send until another wallet buys |
+| Ping pong | Buys and sells take turns; one transaction cannot take both turns |
+| King of the Hill | The biggest buy holds the crown and earns 0.3% of every trade's value while it reigns, paid from Hooker's share of the fees, in SOL or in the Pons launch's asset |
+| Breathing cap · Momentum · Resonance · Coupled resonator | The per-buy cap is driven by an oscillator: a fixed cycle, or one that every buy kicks |
 | Size fee · Auto burn · Holder share | Bigger buys pay more, a share of every buy is burned, part of the fees buys extra coins for holders |
 | Creator fees to holders | After graduation, the coin's creator fees go to its holders instead of the $HOOKER burn (Pumpfun holder rewards, or Pons holder fee sharing) |
 
@@ -58,7 +58,8 @@ Unless a hook says otherwise (P2P-only, hot potato, ping pong, sell caps, hours 
 |---|---|
 | `programs/hooker-hook` | The Solana transfer hook (native Rust). Per-token rules at PDA `["cfg", mint]`, lists at `["list", mint]`; `src/v3.rs` holds the newer hooks, and the ones that remember something (potato, turns, volume, oscillators, the King) keep it in one account per token, `["state", mint]`, never one per buyer, so every app and router can trade them |
 | `lib/king.mjs` | King of the Hill payouts: copies each reign's traded value from chain into a ledger and pays each King, exactly once |
-| `evm/src/HookerToken.sol` | The Robinhood Chain token: the same rules in its transfer, and each holder's balance × time for holder share |
+| `evm/src/HookerToken.sol` | The Robinhood Chain token: the same rules in its transfer, and each holder's balance × time for holder share. Every launch is a minimal-proxy clone of one implementation |
+| `evm/src/HookerMath.sol` | The newer hooks' arithmetic, ported one to one from `v3.rs`: the oscillators, the sine, and the calendar for daylight saving and US market holidays |
 | `evm/src/HookerLaunchpad.sol` | The Robinhood Chain curve, and its graduation: Pons V2 `launchAndBuy` in one transaction, then every holder paid on chain |
 | `lib/rules.mjs` | The rules layout, validation (mirrors the program) and refusal messages |
 | `lib/curve.mjs`, `lib/configs.mjs` | Economics and the Pumpfun-shaped Meteora curves (one config per size × anti-snipe × fee step), remade when Pumpfun changes its curve |
@@ -115,8 +116,9 @@ The end-to-end suites run against the **real mainnet bytecode**: Meteora's bondi
 ## On chain
 
 - Solana hook program: `GE5TW1AFehhNFLYiSiaAkmbTjnHTB3hdhw6ZZFBP5sLV`
-- Robinhood Chain launchpad: `0xd2e757cca670c439525336f7dd1e66e052840da0`
-- Burn wallet (the creator of every graduated coin, buys and burns $HOOKER): `hookXkHBi86pLTAPxShbvXiQsAPuyDmnanfXDs38p8n`
+- Robinhood Chain launchpad: `0x9151414adc57d8a77085d0f0f2fbb21269a3b42a`
+- Robinhood Chain token implementation (every launch is a clone of it): `0x3db35b372a2bd4be083dc9e3265f97e8a7d27a45`
+- Burn wallet (the creator of every graduated Pumpfun coin, buys and burns $HOOKER): `hookXkHBi86pLTAPxShbvXiQsAPuyDmnanfXDs38p8n`
 
 ## Security
 

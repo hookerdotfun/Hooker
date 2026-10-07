@@ -16,7 +16,6 @@ export default function TokenCard({ l }) {
         <Logo src={l.meta?.image} blank={<div className="tc-blank"><img src="/logo-full.png" alt="" /></div>} />
         <span className={`tc-badge ${done ? "on" : ""}`}>{venueLabel(l)}</span>
         {l.createdAt ? <span className="tc-age">{ago(l.createdAt)}</span> : null}
-        {l.chain === "rhc" && <span className="tc-chain">Robinhood</span>}
       </div>
       <div className="tc-body">
         <div className="tc-sym">${sym}</div>

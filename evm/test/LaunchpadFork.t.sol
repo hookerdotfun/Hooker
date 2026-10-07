@@ -41,7 +41,7 @@ contract LaunchpadForkTest is Test {
         string memory url = vm.envOr("RHC_RPC_URL", string(""));
         if (bytes(url).length == 0) { vm.skip(true); return; }
         vm.createSelectFork(url);
-        pad = new HookerLaunchpad(owner, treasury, burnSide, PONS, DIST);
+        pad = new HookerLaunchpad(owner, treasury, burnSide, PONS, DIST, address(new HookerToken()));
         vm.deal(creator, 10 ether);
         for (uint256 i; i < buyers.length; i++) {
             buyers[i] = makeAddr(string(abi.encodePacked("hk-buyer", vm.toString(i))));
@@ -232,6 +232,66 @@ contract LaunchpadForkTest is Test {
         pad.sell(token, cheld, 0);
         (, , , , , , , uint256 realEth, , , , , , , , , , , , , ) = pad.launches(token);
         assertLt(realEth, 10, "the curve is empty to the wei");
+    }
+
+    /// The v3 rules against the real Pons: a token with King of the Hill, hot potato, ping pong's cousin (the
+    /// oscillating cap) and anti-dump fills, graduates into Pons, and every holder (the King included) is paid.
+    function test_v3_rules_fill_graduate_and_pay() public {
+        HookerToken.Rules memory r;
+        HookerLaunchpad.LaunchInput memory a = _input(0, false, r);
+        a.ext.kingOn = true;
+        a.ext.kingMin = 0.01 ether;
+        a.ext.kingBeatPct = 5;
+        a.ext.potatoOn = true;
+        a.ext.potatoMinBps = 100;
+        a.ext.potatoColdSecs = 60;
+        a.ext.maxSellBps = 500;
+        a.ext.oscKind = 2;
+        a.ext.oscPeriod = 120;
+        a.ext.oscBaseBps = 1_000;  // 10% per buy at rest
+        a.ext.oscFloorBps = 500;
+        a.ext.oscAmpPct = 20;
+        a.ext.oscDampPermille = 20;
+        vm.prank(creator);
+        address token = pad.launch{value: 0.01 ether}(a);
+        HookerToken t = HookerToken(token);
+
+        vm.prank(buyers[0]);
+        pad.buy{value: 0.1 ether}(token, 0.1 ether, 0);
+        assertEq(t.king(), buyers[0], "crowned");
+        assertEq(t.potatoHolder(), buyers[0], "holds the potato");
+        vm.prank(buyers[0]);
+        vm.expectRevert(abi.encodeWithSelector(HookerToken.HookRefused.selector, uint8(21)));
+        pad.sell(token, 1 ether, 0);
+
+        // fill the 1.47 ETH curve in buys under the oscillating cap, a minute apart
+        for (uint256 i = 1; i < 60; i++) {
+            (HookerLaunchpad.State st, , , , , , , , , , , , , , , , , , , , ) = pad.launches(token);
+            if (st != HookerLaunchpad.State.Trading) break;
+            vm.warp(block.timestamp + 61);
+            vm.prank(buyers[i % 6]);
+            pad.buy{value: 0.12 ether}(token, 0.12 ether, 0);
+        }
+        (HookerLaunchpad.State st2, , , , , , , , , , , , , , , , , , , , ) = pad.launches(token);
+        assertEq(uint8(st2), uint8(HookerLaunchpad.State.Complete), "full");
+        address k = t.king();
+        uint256 owed = pad.kingOwed(k, address(0));
+        assertGt(owed, 0, "the King earned on the trades");
+
+        address coin = pad.graduate(token);
+        assertTrue(PONS.getLaunchedToken(coin).exists, "a real Pons V2 coin");
+        while (!pad.payout(token, 50)) {}
+        for (uint256 i; i < t.holderCount(); i++) {
+            address h = t.holders(i);
+            if (t.balanceOf(h) > 0) assertGt(IERC20T(coin).balanceOf(h), 0, "every holder paid");
+        }
+        uint256 before = k.balance;
+        pad.payKing(k, address(0));
+        assertEq(k.balance - before, owed, "the King is paid in ETH");
+        // after graduation the token is frozen, rules and all
+        vm.prank(buyers[1]);
+        vm.expectRevert(abi.encodeWithSelector(HookerToken.HookRefused.selector, uint8(15)));
+        t.transfer(buyers[2], 1);
     }
 
     function test_graduate_only_when_full_and_only_once() public {

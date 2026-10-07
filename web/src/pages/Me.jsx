@@ -4,6 +4,7 @@ import { api } from "../lib/api.js";
 import { useWallet, cancelled } from "../lib/wallet.jsx";
 import { short, usd, eth, amt } from "../lib/format.js";
 import TokenCard from "../components/TokenCard.jsx";
+import { useMode } from "../lib/mode.jsx";
 
 /** SOL with sensible precision: 0.0123, 1.25 */
 const solFmt = (s) => (s >= 1 ? s.toFixed(2) : s >= 0.0001 ? s.toFixed(4) : s > 0 ? "<0.0001" : "0");
@@ -69,7 +70,7 @@ function EvmRewardRow({ data, ethUsd, onDone }) {
   }
   return (
     <div className="reward">
-      <div className="reward-l"><b>Hooker on Robinhood Chain</b><span>Creator fees from your coins before they graduate into Pons.</span></div>
+      <div className="reward-l"><b>Hooker</b><span>Creator fees from your coins before they graduate into Pons.</span></div>
       <div className="reward-v"><b>{data ? (fees.length ? fees.map((f) => amt(f.amount, f.symbol, 5)).join(" + ") : eth(total, 5)) : "…"}</b><span>{data && ethUsd && !fees.some((f) => f.symbol !== "ETH") ? usd(total * ethUsd) : ""}</span></div>
       <button type="button" className="btn green small" disabled={!data || (total <= 0 && !fees.length) || !!busy} onClick={claim}>{busy ? "Claiming…" : "Claim"}</button>
       {(busy || msg) && <p className={`reward-msg ${msg?.ok ? "good" : msg ? "err" : "hint"}`}>{busy ?? msg.text}</p>}
@@ -77,8 +78,34 @@ function EvmRewardRow({ data, ethUsd, onDone }) {
   );
 }
 
+/**
+ * Robinhood Chain coins that graduated into Pons. Their Pons creator fees never come to the creator: the launchpad
+ * hands them to Pons's holder distributor (pushed to holders by Pons, nobody claims) or to the graduation wallet,
+ * which buys and burns Hooker's Pons token (never $HOOKER). So this row explains where the fees go and links each coin on Pons; there is no claim.
+ */
+function PonsRow({ coins }) {
+  const toHolders = coins.filter((l) => l.rules?.holderRewards).length;
+  const toBurn = coins.length - toHolders;
+  const where = [toHolders && `${toHolders === coins.length ? "They go" : `${toHolders} go`} to your holders, paid out by Pons automatically.`,
+    toBurn && `${toBurn === coins.length ? "They buy" : `${toBurn} buy`} and burn Hooker’s Pons token.`].filter(Boolean).join(" ");
+  return (
+    <div className="reward">
+      <div className="reward-l">
+        <b>Pons</b>
+        <span>{coins.length
+          ? <>Creator fees on Pons are not claimed by the creator. {where}</>
+          : "When a coin graduates into Pons, its creator fees go to your holders or buy and burn Hooker’s Pons token. Nothing to claim here."}</span>
+        {coins.length > 0 && <span>{coins.map((l, i) => <span key={l.mint}>{i > 0 && " · "}<a href={l.graduated.ponsUrl} target="_blank" rel="noreferrer">${l.meta?.symbol ?? l.symbol} on Pons</a></span>)}</span>}
+      </div>
+      <div className="reward-v"><b>{coins.length}</b><span>{coins.length === 1 ? "coin" : "coins"}</span></div>
+      <span />
+    </div>
+  );
+}
+
 export default function Me() {
   const { address, evmAddress, connect } = useWallet();
+  const { pons, walletKind } = useMode();
   const [ew, setEw] = useState(null);
   const [ethUsd, setEthUsd] = useState(null);
   const loadEvm = useCallback(() => { if (evmAddress) api.evmWallet(evmAddress).then(setEw).catch(() => {}); }, [evmAddress]);
@@ -95,15 +122,17 @@ export default function Me() {
     loadRewards();
   }, [address, evmAddress, loadRewards]);
 
-  if (!address && !evmAddress) return (
+  // only this mode's wallet, rewards and launches
+  const mine = pons ? evmAddress : address;
+  if (!mine) return (
     <div className="empty" style={{ marginTop: 60 }}>
-      Connect a wallet to see your launches and rewards.
-      <div><button className="btn green small" onClick={() => { connect("any").catch(() => {}); }}>Connect</button></div>
+      {pons ? "Connect an EVM wallet to see your Pons launches and rewards on Robinhood Chain." : "Connect a Solana wallet to see your Pumpfun launches and rewards."}
+      <div><button className="btn green small" onClick={() => { connect(walletKind).catch(() => {}); }}>Connect</button></div>
     </div>
   );
   const byMint = Object.fromEntries((all ?? []).map((l) => [l.mint, l]));
-  // both chains' launches; a Robinhood Chain launch shows the Pons creator fees on Pons itself after graduation
-  const created = [...(w?.created ?? []), ...(ew?.created ?? [])];
+  const mineData = pons ? ew : w;
+  const created = mineData?.created ?? [];
   return (
     <div>
       <div className="page-head center">
@@ -112,18 +141,26 @@ export default function Me() {
       </div>
       {err && <p className="err center">{err}</p>}
 
-      {/* creator rewards: Meteora (Hooker curves) and pump.fun (graduated coins), each claimed in one approval */}
+      {/* creator rewards for this mode: Hooker curve + Pumpfun on Solana, or the Robinhood Chain curve + Pons */}
       <section className="panel rewards">
         <h3>Creator rewards</h3>
-        {address && <RewardRow venue="meteora" title="Hooker" sub="Creator fees from your coins on Hooker." data={rw?.meteora} solUsd={rw?.solUsd} onDone={loadRewards} />}
-        {address && <RewardRow venue="pumpfun" title="Pumpfun" sub="Creator fees from your coins on Pumpfun and PumpSwap." data={rw?.pumpfun} solUsd={rw?.solUsd} onDone={loadRewards} />}
-        {evmAddress && <EvmRewardRow data={ew} ethUsd={ethUsd} onDone={loadEvm} />}
+        {pons ? (
+          <>
+            <EvmRewardRow data={ew} ethUsd={ethUsd} onDone={loadEvm} />
+            <PonsRow coins={created.map((m) => byMint[m]).filter((l) => l?.graduated?.ponsUrl)} />
+          </>
+        ) : (
+          <>
+            <RewardRow venue="meteora" title="Hooker" sub="Creator fees from your coins on Hooker." data={rw?.meteora} solUsd={rw?.solUsd} onDone={loadRewards} />
+            <RewardRow venue="pumpfun" title="Pumpfun" sub="Creator fees from your coins on Pumpfun and PumpSwap." data={rw?.pumpfun} solUsd={rw?.solUsd} onDone={loadRewards} />
+          </>
+        )}
       </section>
 
-      <div className="section-head center" style={{ margin: "44px 0 16px" }}><div><h3 style={{ fontSize: 22, margin: 0 }}>Launched by you {(w || ew) && <span className="count">{created.length}</span>}</h3></div></div>
+      <div className="section-head center" style={{ margin: "44px 0 16px" }}><div><h3 style={{ fontSize: 22, margin: 0 }}>Launched by you {mineData && <span className="count">{created.length}</span>}</h3></div></div>
       {created.length
         ? <div className="tgrid">{created.map((m) => byMint[m] ? <TokenCard key={m} l={byMint[m]} /> : <Link key={m} to={`/t/${m}`} className="tc"><span className="mono" style={{ padding: 14 }}>{short(m)}</span></Link>)}</div>
-        : <div className="empty">None yet.<div><Link to="/launch" className="btn green small">Launch a token</Link></div></div>}
+        : <div className="empty">{pons ? "No Pons launches yet." : "No Pumpfun launches yet."}<div><Link to="/launch" className="btn green small">Launch a token</Link></div></div>}
     </div>
   );
 }
