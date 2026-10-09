@@ -46,11 +46,18 @@ const nacl = require("tweetnacl");
 import { LAUNCHED_STATUSES } from "../lib/graduate.mjs";
 import { openDb, listLaunches, getLaunch, registerLaunch, recordIntent } from "../lib/db.mjs";
 import { createEvm } from "../lib/evm.mjs";
+import { CUSTOM_LIMITS, raiseForCap } from "../lib/curve.mjs";
+import { ensureCustomTable, issueCustomConfig, customConfig, customConfigsForMint, checkCustomConfig } from "../lib/custom-configs.mjs";
 import { initVanity, issueForLaunch, issuedToIpSince, importIncoming, incomingDir, freshCount, RESERVATION_SECS, markLaunched } from "../lib/vanity.mjs";
 
 const URI_MAX = 120;
+/** A custom cap's config account: 1,040 bytes of rent, measured on the local validator (0.0088 SOL with the fee). */
+const CUSTOM_CONFIG_RENT = 10_000_000;
+/** Hooks that pay out at graduation, so a token that never migrates cannot pick them (rule field → its name on the site). */
+const NO_MIGRATION_RULES = Object.freeze({ holderShareBps: "Holder share", burnBps: "Auto burn", feeBaseBps: "Dynamic fee", feePerSolBps: "Dynamic fee", feeCapBps: "Dynamic fee",
+  holderRewards: "Creator fees to holders", kingOn: "King of the Hill" });
 
-export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb(`${dataDir}/hooker.db`), configs = null, hookProgram = env.hookProgram, fetchImpl = fetch, launchesPerIpPerHour = 5, vanityReserve, featured: featuredFixed = null, hideBefore: hideBeforeFixed = null, evm: evmOpt } = {}) {
+export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb(`${dataDir}/hooker.db`), configs = null, hookProgram = env.hookProgram, fetchImpl = fetch, launchesPerIpPerHour = 5, vanityReserve, featured: featuredFixed = null, hideBefore: hideBeforeFixed = null, evm: evmOpt, platform = env.expectedPlatform } = {}) {
   const dbc = dbcClient(conn);
   const pumpSdk = new OnlinePumpSdk(conn);
   // the configs new launches use, re-read every minute: the graduator replaces them when pump.fun
@@ -79,7 +86,10 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
   const incoming = incomingDir(dataDir);
   importIncoming(db, incoming);
   setInterval(() => importIncoming(db, incoming), 60_000).unref();
-  const sizeOf = (addr) => state.all[addr]?.sizeSol ?? Object.entries(activeConfigs()).find(([, c]) => c.toBase58() === addr)?.[0];
+  const sizeOf = (addr) => state.all[addr]?.sizeSol ?? customConfig(db, addr)?.grad_sol ?? Object.entries(activeConfigs()).find(([, c]) => c.toBase58() === addr)?.[0];
+  ensureCustomTable(db);
+  /** A config's numbers (size, anti-snipe, fee step): configs.json for the shared sets, the ledger for a custom cap. */
+  const configInfo = (addr) => state.all[addr] ?? customConfig(db, addr) ?? null;
   /** SOL in dollars: pump.fun's own feed first (so our caps match theirs), then Jupiter, then CoinGecko.
    *  Cached a minute; on error the last price is kept (`cached` does that), so caps never blink to "–". */
   const PRICE_FEEDS = [
@@ -240,15 +250,17 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
     }
     const usd = await solUsd().catch(() => null);
     return {
-      mint: l.mint, pool: l.pool, creator: l.creator, name: l.name, symbol: l.symbol, gradSol: l.grad_sol ?? sizeOf(l.config),
+      mint: l.mint, pool: l.pool, creator: l.creator, name: l.name, symbol: l.symbol, gradSol: l.no_migration ? null : l.grad_sol ?? sizeOf(l.config),
+      // a custom cap (lib/custom-configs.mjs): the market cap (SOL) it graduates at, or never (noMigration)
+      capSol: l.cap_sol ?? null, noMigration: !!l.no_migration, customCap: !!(l.cap_sol || l.no_migration),
       createdAt: l.created_at, status: l.status, venue,
       // read from the token's own config: whether its curve carries the anti-snipe fee
       antiSnipe: !feeIsFlat(cfg), antiSnipeStartPct: feeIsFlat(cfg) ? null : startFeePct(cfg),
       // the creator's fee step, from the config (configs made before 4 Oct 2026 are step 0)
-      feeTier: state.all[l.config]?.tier ?? 0, fees: tierSplit(state.all[l.config]?.tier ?? 0),
+      feeTier: configInfo(l.config)?.tier ?? 0, fees: tierSplit(configInfo(l.config)?.tier ?? 0),
       // the custom pair the pump.fun coin is (or will be) paired with; state "fallback" = graduated against SOL instead
       pair: l.pair_mint ? { ...(await pairInfo(l.pair_mint)), creatorFeeBps: l.pair_cfee ?? 0, state: l.pair_state, note: l.pair_note ?? null } : null,
-      progress: Math.min(1, Number(quote) / Number(threshold)), raisedSol: Number(quote) / 1e9, targetSol: Number(threshold) / 1e9,
+      progress: l.no_migration ? null : Math.min(1, Number(quote) / Number(threshold)), raisedSol: Number(quote) / 1e9, targetSol: l.no_migration ? null : Number(threshold) / 1e9,
       marketCapSol, marketCapUsd: marketCapSol != null && usd ? marketCapSol * usd : null, solUsd: usd,
       // ⛔ the pump.fun mint is shown only once its launch has landed: before that, anyone who saw the
       // address could pre-create accounts at it and make pump.fun's create fail forever
@@ -363,6 +375,10 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
         feeTiers: Object.entries(FEE_TIERS).map(([t, f]) => ({ tier: Number(t), label: f.label, ...tierSplit(Number(t)) })),
         defaults: DEFAULT_RULES,
         sizes,
+        // custom graduation caps (10 Oct 2026): any market cap in this range, or no migration at all. Each is a config of
+        // its own, made for that launch, whose rent (~0.009 SOL) the creator pays in the same wallet prompt
+        custom: platform ? { minCapSol: live.capAt(CUSTOM_LIMITS.minRaiseSol), maxCapSol: CUSTOM_LIMITS.maxCapSol, pumpfunCapSol: live.capAt(live.completionSol),
+          noMigration: true, configRentSol: CUSTOM_CONFIG_RENT / 1e9, noMigrationRefuses: NO_MIGRATION_RULES } : null,
         // pump.fun's curve as of now, and whether the configs still match it (the graduator re-makes them when not)
         pumpfun: { startCapSol: live.capAt(0), graduationSol: live.completionSol, graduationCapSol: live.capAt(live.completionSol),
                    configsCurrent: !state.pump || Math.abs(state.pump.completionSol - live.completionSol) < 1e-6 && Math.abs(state.pump.capAt(0) - live.capAt(0)) < 1e-6 },
@@ -482,12 +498,30 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
         if (!nacl.sign.detached.verify(Buffer.from(`Hooker launch ${body.nonce}`), sig, creator.toBytes())) throw status(401, "the signature does not match the wallet");
         nonces.delete(String(body.nonce));
       }
-      const gradSol = Number(body.gradSol);
       const antiSnipe = body.antiSnipe === true;
       const feeTier = body.feeTier == null ? 0 : Number(body.feeTier);
       if (!FEE_TIERS[feeTier]) throw status(400, `fee step must be one of ${Object.keys(FEE_TIERS).join(", ")}`);
-      if (!activeConfigs()[gradSol]) throw status(400, `graduation size must be one of ${Object.keys(activeConfigs()).join(", ")} SOL`);
-      const config = configFor(state, { gradSol, antiSnipe, tier: feeTier });
+      // ⭐ a custom cap: { kind: "cap", capSol } (market cap in SOL) or { kind: "none" } (never migrates). Its config is made
+      // for this launch below; otherwise one of the shared sizes.
+      let custom = null, gradSol, config;
+      if (body.custom != null) {
+        if (!platform) throw status(400, "custom graduation caps are not available");
+        const c = body.custom;
+        if (typeof c !== "object" || !["cap", "none"].includes(c.kind)) throw status(400, 'custom must be { kind: "cap", capSol } or { kind: "none" }');
+        const live = await pumpLive();
+        if (c.kind === "cap") {
+          const capSol = Number(c.capSol);
+          const minCap = live.capAt(CUSTOM_LIMITS.minRaiseSol);
+          if (!Number.isFinite(capSol) || capSol < minCap * 0.999 || capSol > CUSTOM_LIMITS.maxCapSol) throw status(400, `the graduation market cap must be ${minCap.toFixed(1)} to ${CUSTOM_LIMITS.maxCapSol.toLocaleString("en-US")} SOL`);
+          custom = { kind: "cap", capSol: Math.max(capSol, minCap) };
+          gradSol = raiseForCap(custom.capSol, live);
+        } else { custom = { kind: "none" }; gradSol = live.completionSol; } // the dev-buy limit below follows pump.fun's size
+        custom.live = live;
+      } else {
+        gradSol = Number(body.gradSol);
+        if (!activeConfigs()[gradSol]) throw status(400, `graduation size must be one of ${Object.keys(activeConfigs()).join(", ")} SOL`);
+        config = configFor(state, { gradSol, antiSnipe, tier: feeTier });
+      }
       // a custom pair for the pump.fun coin, and the creator fee pump.fun allows only on such a coin
       let pair = null, pumpFeeBps = 0;
       if (body.pair) {
@@ -496,7 +530,9 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
         pumpFeeBps = body.pumpCreatorFeeBps == null || body.pumpCreatorFeeBps === "" ? 0 : Number(body.pumpCreatorFeeBps);
         if (!Number.isInteger(pumpFeeBps) || pumpFeeBps < 0 || pumpFeeBps > MAX_CREATOR_FEE_BPS) throw status(400, "the Pumpfun creator fee must be 0.01% to 3%");
       } else if (body.pumpCreatorFeeBps) throw status(400, "a Pumpfun creator fee needs a custom pair (Pumpfun ignores it on SOL pairs)");
-      if (!config) throw status(400, "that combination of size, fee and anti-snipe opens in a few minutes: try again shortly");
+      if (!config && !custom) throw status(400, "that combination of size, fee and anti-snipe opens in a few minutes: try again shortly");
+      // a custom pair is bought at graduation on pump.fun's curve only: never past its own graduation, never without one
+      if (pair && custom && (custom.kind === "none" || gradSol > custom.live.completionSol)) throw status(400, custom.kind === "none" ? "a token that never migrates has no Pumpfun coin to pair" : "a custom pair works up to Pumpfun's own graduation cap");
       const name = String(body.name ?? "").trim(), symbol = String(body.symbol ?? "").trim(), uri = String(body.uri ?? "").trim();
       if (!name || name.length > 32) throw status(400, "name: 1–32 characters");
       if (!symbol || symbol.length > 10) throw status(400, "symbol: 1–10 characters");
@@ -511,6 +547,8 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       const errs = validateRules(r);
       // "Curve only" is off the site (4 Oct 2026, operator): the hook still supports it, launches here cannot pick it
       if (r.venueLock) errs.push("Curve only is not available.");
+      // with no migration there is no graduation: the hooks paid out AT graduation cannot be picked
+      if (custom?.kind === "none") for (const [k, label] of Object.entries(NO_MIGRATION_RULES)) if (r[k]) errs.push(`${label} pays out at graduation: a token that never migrates cannot have it.`);
       if (errs.length) throw status(400, errs.join(" "));
       const devBuySol = Number(body.devBuySol ?? 0);
       if (!Number.isFinite(devBuySol)) throw status(400, "dev buy must be a number of SOL");
@@ -521,7 +559,7 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       if (devBuy > BigInt(Math.round(gradSol * 1e9)) / 5n) throw status(400, "dev buy: at most a fifth of the graduation size"); // sizes are fractional SOL
       // ⛔ every …hook key handed out is burned (see lib/vanity.mjs), so getting one must cost something:
       // the wallet must hold what the launch needs, and one IP gets a few per hour
-      const need = devBuy + 50_000_000n;
+      const need = devBuy + 50_000_000n + (custom ? BigInt(CUSTOM_CONFIG_RENT) : 0n);
       if (BigInt(await conn.getBalance(creator, "confirmed")) < need) throw status(400, `the wallet needs at least ${Number(need) / 1e9} SOL for this launch`);
       const ip = clientIp(req);
       const retry = db.prepare("SELECT 1 FROM vanity WHERE state = 'issued' AND holder = ? AND issued_at > ?").get(creator.toBase58(), Math.floor(Date.now() / 1000) - RESERVATION_SECS);
@@ -533,10 +571,21 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
         mintKp = issueForLaunch(db, creator.toBase58(), ip, vanityReserve);
       }
       if (!mintKp) throw status(503, "the next hook address is being made: try again in a few minutes");
-      // ⛔ a config's fee split is fixed for good: never launch on one that does not match what the site says
-      const cfgNow = await configState(config);
-      if (cfgNow.creatorTradingFeePercentage !== (feeTier === 0 ? ECONOMICS.creatorTradingFeePct : FEE_TIERS[feeTier].creatorPct)) throw status(503, "launching is being updated to new fees: try again in a few minutes");
-      const launchArgs = { dbc, hookProgram, config, creator, name, symbol, uri, rules: r, devBuyLamports: devBuy, mint: mintKp, lut: await lutFor(), priority: await priorityFee(conn) };
+      // the custom cap's own config: built and signed here (its key is then forgotten), paid and sent by the creator first
+      let configTx = null, configParams = null;
+      if (custom) {
+        const made = await issueCustomConfig({ db, dbc, p: custom.live, platform, hookProgram, creator: creator.toBase58(), mint: mintKp.publicKey.toBase58(), choice: custom, antiSnipe, tier: feeTier });
+        config = made.config; configParams = made.curve.params;
+        withPriority(made.tx, 60_000, await priorityFee(conn));
+        made.tx.feePayer = creator; made.tx.recentBlockhash = (await conn.getLatestBlockhash("confirmed")).blockhash;
+        made.tx.partialSign(made.configKey);
+        configTx = made.tx;
+      } else {
+        // ⛔ a config's fee split is fixed for good: never launch on one that does not match what the site says
+        const cfgNow = await configState(config);
+        if (cfgNow.creatorTradingFeePercentage !== (feeTier === 0 ? ECONOMICS.creatorTradingFeePct : FEE_TIERS[feeTier].creatorPct)) throw status(503, "launching is being updated to new fees: try again in a few minutes");
+      }
+      const launchArgs = { dbc, hookProgram, config, creator, name, symbol, uri, rules: r, devBuyLamports: devBuy, mint: mintKp, lut: await lutFor(), priority: await priorityFee(conn), configParams };
       let built = await buildLaunchTx({ ...launchArgs, memo: pair ? pairMemo(pair, pumpFeeBps) : null });
       // the pair note is the public copy of the choice; the ledger's is the one graduation uses, so a launch
       // that only overflows because of the note goes out without it rather than not at all
@@ -553,7 +602,9 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       else db.prepare("DELETE FROM launch_intents WHERE mint = ?").run(mint.publicKey.toBase58());
       if (tx instanceof VersionedTransaction) { tx.message.recentBlockhash = blockhash; tx.sign([mint]); } // the mint key signs here and is then forgotten
       else { tx.recentBlockhash = blockhash; tx.partialSign(mint); }
-      return { tx: Buffer.from(tx.serialize({ requireAllSignatures: false })).toString("base64"), mint: mint.publicKey.toBase58(), pool: pool.toBase58() };
+      return { tx: Buffer.from(tx.serialize({ requireAllSignatures: false })).toString("base64"), mint: mint.publicKey.toBase58(), pool: pool.toBase58(),
+        // a custom cap: this goes first (it makes the config the launch trades on); the wallet signs both at once
+        ...(configTx ? { configTx: configTx.serialize({ requireAllSignatures: false }).toString("base64"), config: config.toBase58(), custom: { kind: custom.kind, capSol: custom.capSol ?? null, gradSol: custom.kind === "cap" ? gradSol : null } } : {}) };
     },
 
     "POST /api/tx/swap": async ({ body }) => {
@@ -712,7 +763,8 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       } catch (e) { if (e.status) throw e; throw status(400, "not a transaction"); }
       // not an open relay: trades and claims on our curves, and creators' list transactions (lib/relay.mjs)
       const rows = db.prepare("SELECT pool, mint FROM launches").all();
-      const known = new Set([...rows.map((r) => r.pool), ...Object.values(activeConfigs()).map(String), ...Object.keys(state.all)]);
+      const known = new Set([...rows.map((r) => r.pool), ...Object.values(activeConfigs()).map(String), ...Object.keys(state.all),
+        ...db.prepare("SELECT address FROM custom_configs WHERE created_at > ?").all(Math.floor(Date.now() / 1000) - 30 * 86_400).map((r) => r.address)]);
       if (!isRelayable({ instructions }, { known, mints: new Set(rows.map((r) => r.mint)), hookProgram })) throw status(400, "not a Hooker transaction");
       if (sendsInFlight >= 20) throw status(503, "busy, try again in a moment");
       sendsInFlight++;
@@ -743,19 +795,23 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       const mint = key(body.mint);
       if (getLaunch(db, mint)) return { ok: true };
       // the pool address is a PDA of (quote, mint, config): check our configs directly, no program-wide scan
-      const candidates = [...new Set([...Object.values(activeConfigs()).map(String), ...Object.keys(state.all)])].map((c) => deriveDbcPoolAddress(NATIVE_MINT, new PublicKey(mint), new PublicKey(c)));
+      const customs = customConfigsForMint(db, mint);
+      const candidates = [...new Set([...customs.map((c) => c.address), ...Object.values(activeConfigs()).map(String), ...Object.keys(state.all)])].map((c) => deriveDbcPoolAddress(NATIVE_MINT, new PublicKey(mint), new PublicKey(c)));
       const found = (await progressOf(candidates.map((p) => p.toBase58())));
       const poolAddr = candidates.find((p) => found[p.toBase58()]);
       const ps = poolAddr && found[poolAddr.toBase58()];
-      const gradSol = ps && sizeOf(ps.config.toBase58());
-      if (!gradSol) throw status(404, "no pool on a Hooker config for this mint");
+      const cc = ps && customs.find((c) => c.address === ps.config.toBase58());
+      const gradSol = ps && (cc ? cc.grad_sol : sizeOf(ps.config.toBase58()));
+      if (!ps || (!gradSol && !cc?.noMigration)) throw status(404, "no pool on a Hooker config for this mint");
+      if (cc) { const why = checkCustomConfig(await getConfig(dbc, ps.config), cc, platform); if (why) throw status(400, why); }
       const rules = await rulesOf(mint);
       if (!rules) throw status(400, "the token has no Hooker rules");
       if (!PublicKey.isOnCurve(new PublicKey(rules.dev).toBytes())) throw status(400, "the token's dev wallet is not a wallet");
       const meta = await metaOf(mint).catch(() => null);
       if (!meta?.name || !meta?.symbol || !meta?.uri) throw status(400, "the token has no metadata");
       if (meta.name.length > PUMPFUN_LIMITS.name || meta.symbol.length > PUMPFUN_LIMITS.symbol || meta.uri.length > PUMPFUN_LIMITS.uri) throw status(400, "the token's metadata is longer than Pumpfun allows");
-      registerLaunch(db, { mint, pool: poolAddr.toBase58(), config: ps.config.toBase58(), creator: ps.creator.toBase58(), name: meta?.name, symbol: meta?.symbol, uri: meta?.uri, gradSol: Number(gradSol) });
+      registerLaunch(db, { mint, pool: poolAddr.toBase58(), config: ps.config.toBase58(), creator: ps.creator.toBase58(), name: meta?.name, symbol: meta?.symbol, uri: meta?.uri,
+        gradSol: cc?.noMigration ? null : Number(gradSol), noMigration: !!cc?.noMigration, capSol: cc?.cap_sol ?? null });
       return { ok: true };
     },
   };

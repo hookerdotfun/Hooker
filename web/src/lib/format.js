@@ -22,7 +22,7 @@ export function duration(secs) {
 }
 
 /** The rules in plain words, in the order a trader cares about. */
-export function describeRules(r, { gradSol, antiSnipe = false, antiSnipeStartPct = 50, fees = null, pair = null, chain = "sol", unit: unitIn = null } = {}) {
+export function describeRules(r, { gradSol, noMigration = false, antiSnipe = false, antiSnipeStartPct = 50, fees = null, pair = null, chain = "sol", unit: unitIn = null } = {}) {
   // Pons launches (Robinhood Chain) graduate into a Pons coin, in ETH or a Pons pair asset, and take the size fee and burn on every buy
   const pons = chain === "rhc", coin = pons ? "Pons" : "Pumpfun", unit = unitIn ?? (pons ? "ETH" : "SOL");
   if (!r) return [];
@@ -65,7 +65,10 @@ export function describeRules(r, { gradSol, antiSnipe = false, antiSnipeStartPct
   if (r.fomoOnly || r.appOnly || r.maxWalletBps > 0 || r.earlySecs > 0 || r.allowlist || r.blocklist || r.tradeGuardBps > 0 || r.snipeSecs > 0 || r.bundleMax > 0 || r.hoursOn
     || r.maxBuyBps > 0 || r.plagueDose > 0 || r.chapterStartBps > 0 || r.oscKind > 0)
     out.push({ t: "Creator's wallet", d: `The creator's wallet${r.dev ? ` (${short(r.dev)})` : ""} is exempt from the rules about buying and holding, so it can buy at launch. Check what it holds.` });
-  out.push({ t: "Graduation", d: `When ${gradSol ?? "the target"} ${unit} is in the curve it becomes a ${coin} coin and every holder gets their new tokens automatically distributed to their wallet.${r.holderRewards ? ` After that, its ${coin} creator fees go to its holders.` : ""}` });
+  // a custom cap (10 Oct 2026) may be any amount: shown to two decimals at most
+  const gradShown = gradSol == null ? null : Number(gradSol).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  if (noMigration) out.push({ t: "No migration", d: "It never leaves its Meteora curve. There is no graduation, so every rule above stays on for good." });
+  else out.push({ t: "Graduation", d: `When ${gradShown ?? "the target"} ${unit} is in the curve it becomes a ${coin} coin and every holder gets their new tokens automatically distributed to their wallet.${r.holderRewards ? ` After that, its ${coin} creator fees go to its holders.` : ""}` });
   return out;
 }
 

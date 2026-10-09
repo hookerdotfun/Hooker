@@ -22,7 +22,8 @@ export default function TokenCard({ l }) {
         <div className="tc-name">{l.meta?.name ?? l.name ?? "Unnamed"}</div>
         <div className="tc-cap">{usd(l.marketCapUsd)}<span>Market cap</span></div>
         {/* a curve's progress; a graduated token's card ends at its market cap */}
-        {!done && (
+        {!done && l.noMigration && <div className="tc-foot"><span>Stays on Meteora</span><b>No migration</b></div>}
+        {!done && !l.noMigration && (
           <>
             <div className="tc-foot">
               <span>To {l.chain === "rhc" ? "Pons" : "Pumpfun"}</span><b>{pct}%</b>

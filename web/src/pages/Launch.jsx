@@ -72,7 +72,7 @@ export default function Launch() {
   const [evmInfo, setEvmInfo] = useState(null);
   // the header switch decides the venue: Pumpfun (Solana) or Pons (Robinhood Chain); ?on=pons moves it
   const { mode, pons, ponsV3 } = useMode();
-  const [f, setF] = useState({ name: "", symbol: "", description: "", twitter: "", website: "", gradSol: null, devBuy: "0.5", feeTier: 0, pair: null, pumpFee: "", ethSize: 1, devBuyEth: "0.02", quote: "ETH" });
+  const [f, setF] = useState({ name: "", symbol: "", description: "", twitter: "", website: "", gradSol: null, capUsd: "", devBuy: "0.5", feeTier: 0, pair: null, pumpFee: "", ethSize: 1, devBuyEth: "0.02", quote: "ETH" });
   const [r, setR] = useState(null);
   const [image, setImage] = useState(null);
   const [imageUrl, setImageUrl] = useState(null);
@@ -133,6 +133,16 @@ export default function Launch() {
   // a size whose fee step is not made yet falls back to the default step
   useEffect(() => { if (size && !(size.feeTiers ?? [0]).includes(Number(f.feeTier))) setF((x) => ({ ...x, feeTier: 0 })); }, [size, f.feeTier]);
   const money = (capSol) => (info?.solUsd ? usd(capSol * info.solUsd) : sol(capSol, 0));
+  // ⭐ custom graduation caps (10 Oct 2026): f.gradSol "custom" (any market cap) or "none" (never migrates)
+  const customOn = f.gradSol === "custom", noMig = f.gradSol === "none";
+  const capSol = customOn && Number(f.capUsd) > 0 ? (info?.solUsd ? Number(f.capUsd) / info.solUsd : Number(f.capUsd)) : null;
+  // the SOL in the curve when it reaches that cap, on Pumpfun's curve shape (from the start and Pumpfun's own graduation)
+  const raiseFor = (cap) => { const p = info?.pumpfun; if (!p || !(cap > 0)) return null; const vS = p.graduationSol / (Math.sqrt(p.graduationCapSol / p.startCapSol) - 1); return vS * (Math.sqrt(cap / p.startCapSol) - 1); };
+  const customRaise = raiseFor(capSol);
+  const capProblem = customOn && info?.custom ? (!capSol ? "Enter the market cap it graduates at." : capSol < info.custom.minCapSol * 0.999 ? `At least ${money(info.custom.minCapSol)}.` : capSol > info.custom.maxCapSol ? `At most ${money(info.custom.maxCapSol)}.` : null) : null;
+  const pastPump = customOn && capSol > (info?.custom?.pumpfunCapSol ?? Infinity);
+  /** hooks paid out at graduation: a token that never migrates cannot have them (the API refuses them too) */
+  const gradOnly = (x) => [x?.holderShareBps > 0 && "Holder share", x?.burnBps > 0 && "Auto burn", (x?.feeCapBps > 0 || x?.feeBaseBps > 0) && "Dynamic fee", x?.holderRewards && "Creator fees to holders", x?.kingOn && "King of the Hill"].filter(Boolean);
   // the Pons pair asset: ETH or one of Pons's pair assets, each its own launchpad with its own sizes
   const pair = evmInfo?.pairs?.find((p) => p.symbol === f.quote) ?? evmInfo?.pairs?.[0] ?? null;
   const unit = pair?.symbol ?? "ETH";
@@ -249,6 +259,9 @@ export default function Launch() {
       if (!f.name.trim() || !f.symbol.trim()) throw new Error("Name and ticker are required.");
       const pumpFee = f.pair && String(f.pumpFee).trim() !== "" ? Math.round(Number(f.pumpFee) * 100) : 0;
       if (f.pair && String(f.pumpFee).trim() !== "" && !(pumpFee >= 1 && pumpFee <= 300)) throw new Error("The Pumpfun creator fee must be between 0.01% and 3%.");
+      if (capProblem) throw new Error(capProblem);
+      if (noMig && gradOnly(rules).length) throw new Error(`${gradOnly(rules).join(", ")} ${gradOnly(rules).length === 1 ? "pays" : "pay"} out at graduation. Turn ${gradOnly(rules).length === 1 ? "it" : "them"} off for a token that never migrates.`);
+      const pairOk = f.pair && !noMig && !pastPump;
       const { acct } = await connect();
       setPhase(0); setStep("Uploading the image and metadata to IPFS…");
       const form = new FormData();
@@ -259,8 +272,14 @@ export default function Launch() {
       const { nonce, message } = await api.launchNonce(acct.address);
       const signature = await signMessage(message, acct.address);
       setPhase(2); setStep("Preparing the launch…");
-      const built = await api.launchTx({ creator: acct.address, gradSol: Number(f.gradSol), name: f.name.trim(), symbol: f.symbol.trim(), uri, rules, antiSnipe: !!r.antiSnipe, feeTier: Number(f.feeTier) || 0, pair: f.pair?.mint ?? null, pumpCreatorFeeBps: f.pair ? pumpFee : null, devBuySol: Number(f.devBuy || 0), nonce, signature });
-      setStep("Approve the launch in your wallet…");
+      const grad = noMig ? { custom: { kind: "none" } } : customOn ? { custom: { kind: "cap", capSol } } : { gradSol: Number(f.gradSol) };
+      const built = await api.launchTx({ creator: acct.address, ...grad, name: f.name.trim(), symbol: f.symbol.trim(), uri, rules, antiSnipe: !!r.antiSnipe, feeTier: Number(f.feeTier) || 0, pair: pairOk ? f.pair.mint : null, pumpCreatorFeeBps: pairOk ? pumpFee : null, devBuySol: Number(f.devBuy || 0), nonce, signature });
+      if (built.configTx) {
+        // its own graduation config goes first: a separate approval, so the wallet's check of the launch sees the config there
+        setStep(`Approve your token's ${noMig ? "curve" : "graduation cap"} in your wallet (1 of 2)…`);
+        await api.send(await signTransaction(built.configTx, acct.address));
+      }
+      setStep(built.configTx ? "Approve the launch in your wallet (2 of 2)…" : "Approve the launch in your wallet…");
       const signed = await signTransaction(built.tx, acct.address);
       setStep("Launching…");
       await api.send(signed);
@@ -291,13 +310,15 @@ export default function Launch() {
   if (!pons && !info.sizes.length) return <div className="empty" style={{ marginTop: 60 }}>Launching on Pumpfun is paused right now. Trading and graduations carry on as normal.</div>;
   const preview = pons
     ? describeRules({ ...rules, ...ponsExt, plagueDose: ponsExt.plagueTokens, chapterVolume: ponsExt.chapterTokens, dev: evmAddress }, { gradSol: ponsSize?.eth, antiSnipe: !!r?.antiSnipe, fees: ponsTier, chain: "rhc", unit })
-    : describeRules({ ...rules, dev: address }, { gradSol: f.gradSol, antiSnipe: !!r?.antiSnipe, fees: tierNow, pair: f.pair ? { symbol: f.pair.symbol, creatorFeeBps: Math.round(Number(f.pumpFee || 0) * 100), toHolders: !!r?.holderRewards } : null });
+    : describeRules({ ...rules, dev: address }, { gradSol: noMig ? null : customOn ? customRaise : f.gradSol, noMigration: noMig, antiSnipe: !!r?.antiSnipe, fees: tierNow, pair: f.pair && !noMig && !pastPump ? { symbol: f.pair.symbol, creatorFeeBps: Math.round(Number(f.pumpFee || 0) * 100), toHolders: !!r?.holderRewards } : null });
   const catalog = rulesFor(info, mode, ponsV3);
   const on = isOn(r);
   const chosen = catalog.filter((x) => on[x.id]);
   const groups = [...new Set(catalog.map((x) => x.group))];
   const sym = f.symbol.trim() || "TICKER";
-  const steps = pons ? (listed ? [...PONS_STEPS.slice(0, 2), PONS_LIST_STEP, PONS_STEPS[2]] : PONS_STEPS) : listed ? [...STEPS.slice(0, 3), LIST_STEP, STEPS[3]] : STEPS;
+  // a custom cap or no migration: its own config is a second approval, before the launch
+  const solSteps = customOn || noMig ? STEPS.map((x, i) => (i === 2 ? ["Approve the launch", "Two approvals: your curve's own config, then your token, its rules and your buy."] : x)) : STEPS;
+  const steps = pons ? (listed ? [...PONS_STEPS.slice(0, 2), PONS_LIST_STEP, PONS_STEPS[2]] : PONS_STEPS) : listed ? [...solSteps.slice(0, 3), LIST_STEP, solSteps[3]] : solSteps;
   // phase 4 is the list, shown before "Listed on Hooker" (phase 3 on Pons)
   const stepState = (i) => {
     if (pons) {
@@ -626,9 +647,35 @@ export default function Launch() {
                 </button>
               ))}
             </div>
+            {info.custom && (
+              <div className="sizes sizes-2">
+                <>
+                  <button type="button" className={`size ${customOn ? "on" : ""}`} onClick={() => setF({ ...f, gradSol: "custom" })}>
+                    <b>Custom</b><span>any graduation cap</span>
+                  </button>
+                  <button type="button" className={`size ${noMig ? "on" : ""}`} onClick={() => setF({ ...f, gradSol: "none" })}>
+                    <b>No migration</b><span>stays on Meteora</span>
+                  </button>
+                </>
+              </div>
+            )}
+            {customOn && (
+              <Field label="Graduation market cap" hint={capProblem && f.capUsd ? capProblem
+                : `${customRaise ? `About ${customRaise.toLocaleString("en-US", { maximumFractionDigits: customRaise < 10 ? 2 : 1 })} SOL in the curve. ` : ""}${pastPump ? "Past Pumpfun's own graduation: at graduation the coin fills Pumpfun's curve and the rest of the raise buys it on PumpSwap. " : ""}Your curve gets its own Meteora config, about ${info.custom.configRentSol.toFixed(2)} SOL, approved before the launch.`}>
+                <div className="amount"><input type="number" min="0" step="any" placeholder={info.solUsd ? "100000" : "500"} value={f.capUsd} onChange={set("capUsd")} /><span>{info.solUsd ? "USD" : "SOL"}</span></div>
+                <div className="quick">{(info.solUsd ? ["25000", "250000", "1000000", "5000000"] : ["100", "1000", "5000", "20000"]).map((v) => <button type="button" key={v} className={f.capUsd === v ? "on" : ""} onClick={() => setF({ ...f, capUsd: v })}>{info.solUsd ? usd(Number(v)) : `${v} SOL`}</button>)}</div>
+              </Field>
+            )}
+            {noMig && (
+              <p className="hint" style={{ margin: "0 0 14px" }}>
+                The curve never fills, so the token never leaves Meteora and every hook stays on for good. Hooks that pay out at graduation (holder share, auto burn, dynamic fee, creator fees to holders, King of the Hill) are not available. Your curve gets its own Meteora config, about {info.custom.configRentSol.toFixed(2)} SOL, approved before the launch.
+                {gradOnly(rules).length ? <span className="err" style={{ display: "block", marginTop: 6 }}>Turn off: {gradOnly(rules).join(", ")}.</span> : null}
+              </p>
+            )}
             <div className="caps">
               <div><span className="k">Starting market cap</span><b>{money(info.pumpfun.startCapSol)}</b><span className="hint">same as every Pumpfun coin</span></div>
-              <div><span className="k">Graduation market cap</span><b>{size ? money(size.endCapSol) : "…"}</b><span className="hint">at most {money(info.pumpfun.graduationCapSol)}, where Pumpfun's curve fills</span></div>
+              <div><span className="k">Graduation market cap</span><b>{noMig ? "Never" : customOn ? (capSol && !capProblem ? money(capSol) : "…") : size ? money(size.endCapSol) : "…"}</b>
+                <span className="hint">{noMig ? "it stays on Meteora" : customOn ? `${money(info.custom.minCapSol)} to ${money(info.custom.maxCapSol)}` : `at most ${money(info.pumpfun.graduationCapSol)}, where Pumpfun's curve fills`}</span></div>
             </div>
             {/* the creator's fee per trade: each step is its own set of Meteora configs (lib/curve.mjs FEE_TIERS) */}
             <span className="label" style={{ display: "block", margin: "6px 0 8px" }}>Your fee per trade</span>
@@ -640,6 +687,7 @@ export default function Launch() {
               ))}
             </div>
             {/* the Pumpfun coin's pair (pump.fun's custom pairs, ≥ $1M liquidity) and the creator fee it allows */}
+            {!noMig && !pastPump && <>
             <span className="label" style={{ display: "block", margin: "6px 0 8px" }}>Pair on Pumpfun</span>
             <PairPicker value={f.pair} onChange={(p) => setF((x) => ({ ...x, pair: p, pumpFee: p ? x.pumpFee : "" }))} />
             <p className="hint" style={{ margin: "8px 0 14px" }}>{f.pair ? `At graduation the curve's SOL is swapped into ${f.pair.symbol} and the Pumpfun coin trades against it.` : "The Pumpfun coin trades against SOL, like most Pumpfun coins."}</p>
@@ -649,6 +697,7 @@ export default function Launch() {
                 <input type="number" min="0.01" max="3" step="0.01" placeholder="0.01-3" value={f.pumpFee} onChange={set("pumpFee")} />
               </Field>
             )}
+            </>}
             <Field label="Your buy at launch" hint={r?.antiSnipe ? "At least 0.01 SOL. It is the only trade that skips the anti-snipe fee, so it has to be yours, inside the launch itself." : "At least 0.01 SOL. It is made inside the launch itself so nobody can buy before you."}>
               <div className="amount"><input type="number" min="0.01" step="0.1" value={f.devBuy} onChange={set("devBuy")} /><span>SOL</span></div>
               <div className="quick">{["0.1", "0.5", "1", "2"].map((v) => <button type="button" key={v} className={f.devBuy === v ? "on" : ""} onClick={() => setF({ ...f, devBuy: v })}>{v} SOL</button>)}</div>
@@ -680,7 +729,7 @@ export default function Launch() {
                 </div>
               ))}
             </div>
-            <div className="ptok-foot">{pons ? <><span>{ponsSize ? amt(ponsSize.eth, unit, 2) : ""} curve · Robinhood Chain</span><span>then Pons</span></> : <><span>{f.gradSol} SOL curve · Meteora DBC</span><span>then Pumpfun</span></>}</div>
+            <div className="ptok-foot">{pons ? <><span>{ponsSize ? amt(ponsSize.eth, unit, 2) : ""} curve · Robinhood Chain</span><span>then Pons</span></> : noMig ? <><span>Meteora DBC curve</span><span>no migration</span></> : <><span>{customOn ? (capSol && !capProblem ? `${money(capSol)} cap` : "Custom") : `${f.gradSol} SOL`} curve · Meteora DBC</span><span>then Pumpfun</span></>}</div>
           </section>
 
           <section className="panel checklist">

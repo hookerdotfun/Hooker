@@ -11,7 +11,7 @@ const SECTIONS = {
   pumpfun: [
     ["Hooks", "Every Hooker token carries its rules in the token itself: a Solana Token-2022 token with a transfer hook. The rules run on every buy, sell and transfer, and a trade that breaks them never lands. The rules are a part of the token and are fixed at launch."],
     ["Bonding curve", "New tokens launch on a Meteora bonding curve shaped exactly like Pumpfun’s, so market cap and pricing work the same way.\n\nTrading costs 1% per trade. If the creator enables the anti-snipe fee it starts at 50% and gradually drops to 1% over the first two minutes, making early sniping expensive."],
-    ["Graduation", "When the curve fills the hook is removed and the token graduates to Pumpfun. In the same transaction, the SOL from the curve is used to create and buy the new coin. This happens before anyone can buy in, so existing holders receive their share automatically and no one can get ahead of them. Each holder receives their allocation directly in their wallet."],
+    ["Graduation", "When the curve fills the hook is removed and the token graduates to Pumpfun. In the same transaction, the SOL from the curve is used to create and buy the new coin. This happens before anyone can buy in, so existing holders receive their share automatically and no one can get ahead of them. Each holder receives their allocation directly in their wallet.\n\nThe creator picks the graduation market cap: one of the preset sizes, any cap they set, or no migration at all. Past Pumpfun's own graduation, the SOL from the curve fills Pumpfun's curve and buys the rest of the coin on PumpSwap. With no migration the curve never fills, so the token stays on Meteora with its hooks on for good."],
     ["Fees", "Every token starts with a 1% fee, split between the creator and Hooker, after Meteora's share. Creators can raise their fee to up to 3%. At graduation, Hooker's share tops every holder up to one Pumpfun coin per token they held.\n\nAfter graduation, the coin's Pumpfun creator fees go to Hooker's burn wallet, which buys $HOOKER with them and burns it. Every claim and burn is a public transaction. A creator can pick the Creator fees to holders hook instead, and then that coin's fees go to its holders."],
   ],
   pons: [
@@ -98,8 +98,8 @@ export default function How() {
             <span className="phase">02 · Pumpfun</span>
             <h3>Pumpfun</h3>
             <p>At graduation the token migrates to a Pumpfun coin and tokens are distributed to holders.</p>
-            <div className="big">{info ? money(info.pumpfun.graduationCapSol) : "–"}</div>
-            <span className="muted" style={{ fontSize: 13 }}>highest graduation, never above Pumpfun's own</span>
+            <div className="big">{info ? money(info.custom?.maxCapSol ?? info.pumpfun.graduationCapSol) : "–"}</div>
+            <span className="muted" style={{ fontSize: 13 }}>{info?.custom ? "highest graduation cap a creator can set, or none at all" : "highest graduation, never above Pumpfun's own"}</span>
           </div>
           <div className="panel jcard">
             <Curve kind={2} />

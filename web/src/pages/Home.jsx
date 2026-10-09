@@ -10,7 +10,7 @@ import { useMode, inMode } from "../lib/mode.jsx";
 
 const STEPS = {
   pumpfun: [
-    ["Launch with rules", "Choose your graduation size and the rules your token will enforce. Launch directly from your Solana wallet with your initial buy included. Every token address ends in hook."],
+    ["Launch with rules", "Choose your graduation cap and the rules your token will enforce. Launch directly from your Solana wallet with your initial buy included. Every token address ends in hook."],
     ["Bonding curve", "It trades on a curve that mirrors Pumpfun’s bonding curve keeping market cap and pricing exactly the same."],
     ["Migration", "When the curve fills the rules are removed and all of the SOL is used to create and launch a new Pumpfun coin in the same transaction. Holders receive their allocation automatically, with no one able to buy ahead of them."],
     ["Token distribution", "Every holder receives their share of the new coin directly in their wallet without having to claim anything. From there, it trades like any normal Pumpfun coin."],
@@ -59,8 +59,8 @@ export default function Home() {
   // only this mode's chain. Each side has its own platform coin: $HOOKER on Solana, Hooker's Pons token on Robinhood Chain
   const data = useMemo(() => (all ? all.filter((l) => inMode(l, chain)) : null), [all, chain]);
   const grads = useMemo(() => (data ?? []).filter((l) => l.status !== "trading"), [data]);
-  // each side's own coin: the featured Pons coin (featured.json evmCoins) on Pons, $HOOKER on Pumpfun
-  const ca = pons ? all?.find((l) => l.native && l.chain === "rhc")?.mint ?? evmInfo?.platformToken ?? null : all?.find((l) => l.native && l.chain !== "rhc")?.mint ?? null;
+  // $HOOKER's CA, Pumpfun mode only: Pons mode shows no CA line at all
+  const ca = pons ? null : all?.find((l) => l.native && l.chain !== "rhc")?.mint ?? null;
   const [copied, setCopied] = useState(false);
   const copyCa = async () => { try { await navigator.clipboard.writeText(ca); setCopied(true); setTimeout(() => setCopied(false), 1400); } catch {} };
   const money = (capSol) => (info?.solUsd ? usd(capSol * info.solUsd) : "–");
@@ -79,12 +79,12 @@ export default function Home() {
           <Link to="/launch" className="btn">Launch a token</Link>
           <Link to="/docs" className="btn ghost">Docs</Link>
         </div>
-        {/* our own coin's CA (featured.json); empty until it is launched. Clicking it copies it. */}
-        <button type="button" className="ca ca-click" disabled={!ca} onClick={copyCa} title={ca ? "Copy" : undefined}>
+        {/* $HOOKER's CA (featured.json), Pumpfun mode only; empty until it is launched. Clicking it copies it. */}
+        {!pons && <button type="button" className="ca ca-click" disabled={!ca} onClick={copyCa} title={ca ? "Copy" : undefined}>
           <b>CA:</b>
           {ca && <span className="ca-addr">{ca}</span>}
           {copied && <span className="ca-done">Copied</span>}
-        </button>
+        </button>}
         <div className="pstats">
           <div><span className="k">Tokens launched</span><b>{data ? data.length : "–"}</b></div>
           {/* every hook block on this page (15 on 4 Oct 2026) */}

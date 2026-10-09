@@ -303,13 +303,27 @@ function TokenSol({ mint }) {
               )
             ) : (
               <>
-                <div className="label" style={{ marginBottom: 8 }}><span>Bonding curve</span><b>{Math.round(t.progress * 100)}%</b></div>
-                <div className="bar big"><span style={{ width: `${Math.max(2, Math.round(t.progress * 100))}%` }} /></div>
-                <div className="bigstats">
-                  <div><b>{usd(t.marketCapUsd)}</b><span>market cap{t.marketCapSol != null ? ` · ${sol(t.marketCapSol, 1)}` : ""}</span></div>
-                  <div><b>{sol(t.raisedSol, 2).replace(" SOL", "")}</b><span>of {sol(t.targetSol, 1)} raised</span></div>
-                  <div><b>{Math.round(t.progress * 100)}%</b><span>to Pumpfun</span></div>
-                </div>
+                {t.noMigration ? (
+                  <>
+                    <div className="label" style={{ marginBottom: 8 }}><span>Bonding curve</span><b>No migration</b></div>
+                    <div className="bigstats">
+                      <div><b>{usd(t.marketCapUsd)}</b><span>market cap{t.marketCapSol != null ? ` · ${sol(t.marketCapSol, 1)}` : ""}</span></div>
+                      <div><b>{sol(t.raisedSol, 2).replace(" SOL", "")}</b><span>SOL in the curve</span></div>
+                      <div><b>Meteora</b><span>for good, rules on</span></div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="label" style={{ marginBottom: 8 }}><span>Bonding curve</span><b>{Math.round(t.progress * 100)}%</b></div>
+                    <div className="bar big"><span style={{ width: `${Math.max(2, Math.round(t.progress * 100))}%` }} /></div>
+                    <div className="bigstats">
+                      <div><b>{usd(t.marketCapUsd)}</b><span>market cap{t.marketCapSol != null ? ` · ${sol(t.marketCapSol, 1)}` : ""}</span></div>
+                      <div><b>{sol(t.raisedSol, 2).replace(" SOL", "")}</b><span>of {sol(t.targetSol, 1)} raised</span></div>
+                      <div><b>{Math.round(t.progress * 100)}%</b><span>to Pumpfun</span></div>
+                    </div>
+                    {t.capSol ? <p className="note" style={{ marginTop: 14 }}>Graduates at a {t.solUsd ? usd(t.capSol * t.solUsd) : sol(t.capSol, 0)} market cap, set by its creator.</p> : null}
+                  </>
+                )}
                 {windowLeft > 0 && <p className="note" style={{ marginTop: 14 }}>Launch window: {duration(windowLeft)} left at the tighter wallet cap.</p>}
               </>
             )}
@@ -323,7 +337,7 @@ function TokenSol({ mint }) {
               </p>
             )}
             {t.pair?.state === "fallback" && <p className="note" style={{ marginBottom: 12 }}>It was set to pair with {t.pair.symbol ?? "a custom pair"} on Pumpfun, but at graduation {t.pair.note ?? "the pair no longer qualified"}, so it paired with SOL instead.</p>}
-            <ul className="rules">{describeRules(t.rules, { gradSol: t.gradSol, antiSnipe: t.antiSnipe, antiSnipeStartPct: t.antiSnipeStartPct ?? 50, fees: t.fees, pair: t.pair && t.pair.state !== "fallback" ? { symbol: t.pair.symbol ?? `${t.pair.mint.slice(0, 4)}…`, creatorFeeBps: t.pair.creatorFeeBps, toHolders: !!t.rules?.holderRewards } : null }).map((x) => <li key={x.t}><div><b>{x.t}</b>{x.d}</div></li>)}</ul>
+            <ul className="rules">{describeRules(t.rules, { gradSol: t.gradSol, noMigration: t.noMigration, antiSnipe: t.antiSnipe, antiSnipeStartPct: t.antiSnipeStartPct ?? 50, fees: t.fees, pair: t.pair && t.pair.state !== "fallback" ? { symbol: t.pair.symbol ?? `${t.pair.mint.slice(0, 4)}…`, creatorFeeBps: t.pair.creatorFeeBps, toHolders: !!t.rules?.holderRewards } : null }).map((x) => <li key={x.t}><div><b>{x.t}</b>{x.d}</div></li>)}</ul>
             <p className="hint">Enforced by the token itself on Solana. Nobody can change them.</p>
           </section>}
         </div>
