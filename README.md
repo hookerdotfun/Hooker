@@ -8,6 +8,8 @@ Every token address (the Hooker token and its Pumpfun coin) ends in `hook`.
 
 **Creator fees.** Every Pumpfun coin that graduates names the launch's creator as its creator, so its creator fees go to them. A creator can route a coin's fees to its holders instead with the "Creator fees to holders" hook.
 
+**Ticker lock (anti-vamp).** A ticker launched on Hooker cannot be launched on Hooker again, by any wallet (its creator's included), for the lock its creator picked: 24 hours, 3 days or 7 days. Case, spaces, a leading `$` and invisible characters do not make a ticker new. The API refuses a locked ticker; a pool made outside the site inside a lock is kept off the site (`lib/tickers.mjs`).
+
 ## Hooks
 
 All hooks are off by default; a creator combines any of them.
@@ -55,6 +57,7 @@ Unless a hook says otherwise (P2P-only, hot potato, ping pong, sell caps, hours 
 | `lib/graduate.mjs` | The graduation service: idempotent, ledger-first steps (every signature stored before it is sent) |
 | `lib/pairs.mjs` | Custom pairs: Pumpfun's quote-control list, liquidity and safety checks, the Jupiter swap |
 | `lib/pumpprice.mjs` | Prices a coin in every phase: Hooker curve → Pumpfun curve → PumpSwap |
+| `lib/tickers.mjs` | The anti-vamp ticker lock |
 | `lib/custom-configs.mjs` | Custom caps and No migration: one Meteora config per launch, the creator pays its rent |
 | `lib/flywheel.mjs` | An optional burn (off on hooker.fun): claims a burn wallet's creator fees, buys a coin on PumpSwap and burns it |
 | `lib/lander.mjs` | Rebroadcasts a signed transaction until it lands or provably cannot |
