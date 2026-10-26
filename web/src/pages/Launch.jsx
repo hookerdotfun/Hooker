@@ -61,7 +61,7 @@ export default function Launch() {
   const [params] = useSearchParams();
   const { address, connect, signTransaction, signTransactions, signMessage } = useWallet();
   const [info, setInfo] = useState(null);
-  const [f, setF] = useState({ name: "", symbol: "", description: "", twitter: "", website: "", gradSol: null, capUsd: "", devBuy: "0.5", feeTier: 0, pair: null, pumpFee: "" });
+  const [f, setF] = useState({ name: "", symbol: "", description: "", twitter: "", website: "", gradSol: null, capUsd: "", devBuy: "0.5", feeTier: 0, pair: null, pumpFee: "", tickerLock: "24h" });
   const [r, setR] = useState(null);
   const [image, setImage] = useState(null);
   const [imageUrl, setImageUrl] = useState(null);
@@ -69,6 +69,16 @@ export default function Launch() {
   const [phase, setPhase] = useState(-1); // index into STEPS while launching
   const [err, setErr] = useState(null);
   const picked = useRef(params.get("rule"));
+  // anti-vamp: whether the ticker typed is free on Hooker right now (GET /api/ticker), asked as the creator types
+  const [tick, setTick] = useState(null);
+  useEffect(() => {
+    const sym = f.symbol.trim();
+    if (!sym) { setTick(null); return; }
+    let live = true;
+    const t = setTimeout(() => { api.ticker(sym, address).then((j) => { if (live) setTick(j); }).catch(() => {}); }, 350);
+    return () => { live = false; clearTimeout(t); };
+  }, [f.symbol, address]);
+  const tickLocked = !!(tick?.locked && tick.symbol === f.symbol.trim());
 
   useEffect(() => {
     api.info().then((i) => {
@@ -170,6 +180,9 @@ export default function Launch() {
       if (noMig && gradOnly(rules).length) throw new Error(`${gradOnly(rules).join(", ")} ${gradOnly(rules).length === 1 ? "pays" : "pay"} out at graduation. Turn ${gradOnly(rules).length === 1 ? "it" : "them"} off for a token that never migrates.`);
       const pairOk = f.pair && !noMig && !pastPump;
       const { acct } = await connect();
+      // a locked ticker stops here, before anything is uploaded or signed
+      const t = await api.ticker(f.symbol.trim(), acct.address);
+      if (t.locked) throw new Error(t.why);
       setPhase(0); setStep("Uploading the image and metadata to IPFS…");
       const form = new FormData();
       form.append("file", image);
@@ -180,7 +193,7 @@ export default function Launch() {
       const signature = await signMessage(message, acct.address);
       setPhase(2); setStep("Preparing the launch…");
       const grad = noMig ? { custom: { kind: "none" } } : customOn ? { custom: { kind: "cap", capSol } } : { gradSol: Number(f.gradSol) };
-      const built = await api.launchTx({ creator: acct.address, ...grad, name: f.name.trim(), symbol: f.symbol.trim(), uri, rules, antiSnipe: !!r.antiSnipe, feeTier: Number(f.feeTier) || 0, pair: pairOk ? f.pair.mint : null, pumpCreatorFeeBps: pairOk ? pumpFee : null, devBuySol: Number(f.devBuy || 0), nonce, signature });
+      const built = await api.launchTx({ creator: acct.address, ...grad, name: f.name.trim(), symbol: f.symbol.trim(), uri, rules, antiSnipe: !!r.antiSnipe, feeTier: Number(f.feeTier) || 0, pair: pairOk ? f.pair.mint : null, pumpCreatorFeeBps: pairOk ? pumpFee : null, devBuySol: Number(f.devBuy || 0), tickerLock: f.tickerLock, nonce, signature });
       if (built.configTx) {
         // its own graduation config goes first: a separate approval, so the wallet's check of the launch sees the config there
         setStep(`Approve your token's ${noMig ? "curve" : "graduation cap"} in your wallet (1 of 2)…`);
@@ -265,6 +278,12 @@ export default function Launch() {
               <Field label="Website"><input value={f.website} onChange={set("website")} placeholder="https://…" /></Field>
             </div>
             <p className="hint" style={{ margin: "2px 0 0" }}>Name, ticker and image carry over to the Pumpfun coin at graduation and can never be changed.</p>
+            {tickLocked && <p className="err" style={{ margin: "10px 0 0" }}>{tick.why}</p>}
+            <Field label="Ticker lock" hint="No token can launch on Hooker with your ticker for this long after yours, your own wallet included.">
+              <select value={f.tickerLock} onChange={set("tickerLock")}>
+                {(info.tickerLocks?.options ?? [{ id: "24h" }, { id: "3d" }, { id: "7d" }]).map((o) => <option key={o.id} value={o.id}>{{ "24h": "24 hours", "3d": "3 days", "7d": "7 days" }[o.id] ?? o.id}</option>)}
+              </select>
+            </Field>
           </Sec>
 
           <Sec n="2" title="Hooks" id="rules">
@@ -600,7 +619,7 @@ export default function Launch() {
               </div>
             ))}
             {err && <p className="err">{err}</p>}
-            <button className="btn green big" disabled={!!step}>{step ? "Launching…" : address ? "Launch" : "Connect and launch"}</button>
+            <button className="btn green big" disabled={!!step || tickLocked}>{step ? "Launching…" : address ? "Launch" : "Connect and launch"}</button>
           </section>
         </aside>
       </div>

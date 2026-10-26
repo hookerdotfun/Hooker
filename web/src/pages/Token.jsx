@@ -328,7 +328,11 @@ function TokenSol({ mint }) {
               </p>
             )}
             {t.pair?.state === "fallback" && <p className="note" style={{ marginBottom: 12 }}>It was set to pair with {t.pair.symbol ?? "a custom pair"} on Pumpfun, but at graduation {t.pair.note ?? "the pair no longer qualified"}, so it paired with SOL instead.</p>}
-            <ul className="rules">{describeRules(t.rules, { gradSol: t.gradSol, noMigration: t.noMigration, antiSnipe: t.antiSnipe, antiSnipeStartPct: t.antiSnipeStartPct ?? 50, fees: t.fees, pair: t.pair && t.pair.state !== "fallback" ? { symbol: t.pair.symbol ?? `${t.pair.mint.slice(0, 4)}…`, creatorFeeBps: t.pair.creatorFeeBps, toHolders: !!t.rules?.holderRewards } : null }).map((x) => <li key={x.t}><div><b>{x.t}</b>{x.d}</div></li>)}</ul>
+            <ul className="rules">{describeRules(t.rules, { gradSol: t.gradSol, noMigration: t.noMigration, antiSnipe: t.antiSnipe, antiSnipeStartPct: t.antiSnipeStartPct ?? 50, fees: t.fees, pair: t.pair && t.pair.state !== "fallback" ? { symbol: t.pair.symbol ?? `${t.pair.mint.slice(0, 4)}…`, creatorFeeBps: t.pair.creatorFeeBps, toHolders: !!t.rules?.holderRewards } : null }).map((x) => <li key={x.t}><div><b>{x.t}</b>{x.d}</div></li>)}
+              {t.tickerLock?.lockSecs > 0 && <li><div><b>Ticker lock</b>{t.tickerLock.until && t.tickerLock.until * 1000 > Date.now()
+                ? `No other token can launch on Hooker as $${t.symbol} until ${new Date(t.tickerLock.until * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}.`
+                : `$${t.symbol} was locked on Hooker for ${{ 86400: "24 hours", 259200: "3 days", 604800: "7 days" }[t.tickerLock.lockSecs] ?? duration(t.tickerLock.lockSecs)} after launch.`}</div></li>}
+            </ul>
             <p className="hint">Enforced by the token itself on Solana. Nobody can change them.</p>
           </section>}
         </div>

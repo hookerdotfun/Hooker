@@ -16,7 +16,7 @@ const configs = Object.fromEntries(Object.entries(JSON.parse(readFileSync(`${DAT
 const G0 = Math.min(...Object.keys(configs).map(Number));
 const HOOK = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(new URL("../keys/hooker-hook-keypair.json", import.meta.url))))).publicKey;
 const db = openDb(`${DATA}/api.db`);
-db.exec("DELETE FROM launches; DELETE FROM pushes; DELETE FROM pending;");
+db.exec("DELETE FROM launches; DELETE FROM pushes; DELETE FROM pending; DELETE FROM tickers;");
 // IPFS upstream stand-in: records what was forwarded, answers like pump.fun
 let forwarded = null;
 const pinned = [];
@@ -130,6 +130,16 @@ const sent = await signAndSend(L.json.tx, creator);
 if (sent.status !== 200) console.log("   send →", sent.status, JSON.stringify(sent.json).slice(0, 400));
 ok(sent.status === 200 && sent.json.signature, "the creator's wallet signed it and the API sent it");
 ok((await call("POST", "/api/register", { mint: L.json.mint })).json.ok, "the launch is listed");
+// anti-vamp: the landed launch holds its ticker for everyone, whatever the spelling, its creator too
+{ const st = (await call("GET", "/api/ticker?symbol=%24apit")).json;
+  ok(st.locked && !st.preparing && st.until > Date.now() / 1000 + 86_000, `a launched ticker reads locked for its lock (${st.why})`);
+  const other = await call("POST", "/api/tx/launch", await signed(buyer, { creator: buyer.publicKey.toBase58(), gradSol: G0, name: "Copy", symbol: "apit", uri: "https://ipfs.example/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", devBuySol: 0.1 }));
+  ok(other.status === 409 && /locked/.test(other.json.error), `another wallet cannot launch the same ticker in another case (${other.status} "${other.json.error}")`);
+  const self = await call("POST", "/api/tx/launch", await signed(creator, { creator: creator.publicKey.toBase58(), gradSol: G0, name: "Again", symbol: "APIT", uri: "https://ipfs.example/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", devBuySol: 0.1 }));
+  ok(self.status === 409, "nor can its own creator, inside the lock");
+  ok((await call("POST", "/api/tx/launch", await signed(creator, { creator: creator.publicKey.toBase58(), gradSol: G0, name: "X", symbol: "XX", uri: "https://ipfs.example/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", devBuySol: 0.1, tickerLock: "1y" }))).status === 400, "only 24h, 3d or 7d can be picked");
+  ok((await call("GET", "/api/ticker?symbol=FRESH")).json.locked === false, "an unused ticker is free");
+  ok((await call("GET", `/api/token/${L.json.mint}`)).json.tickerLock?.lockSecs === 86_400, "the token page has its lock (24 hours when none was picked)"); }
 ok((await call("POST", "/api/register", { mint: Keypair.generate().publicKey.toBase58() })).status === 404, "a mint that is not a Hooker launch cannot be listed");
 const t = (await call("GET", `/api/token/${L.json.mint}`)).json;
 ok(t.symbol === "APIT" && t.rules.maxWalletBps === 1_000 && t.rules.burnBps === 100 && t.rules.dev === creator.publicKey.toBase58() && t.progress > 0, `the token page has its rules and progress (${(t.progress * 100).toFixed(1)}%, cap ${t.marketCapSol.toFixed(1)} SOL)`);

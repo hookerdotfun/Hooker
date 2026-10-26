@@ -19,6 +19,7 @@ export const api = {
   upload: (form) => req("POST", "/api/ipfs", form, true),
   launchNonce: (creator) => req("GET", `/api/launch-nonce/${creator}`),
   launchTx: (body) => req("POST", "/api/tx/launch", body),
+  ticker: (symbol, creator) => req("GET", `/api/ticker?symbol=${encodeURIComponent(symbol)}${creator ? `&creator=${encodeURIComponent(creator)}` : ""}`),
   swapTx: (body) => req("POST", "/api/tx/swap", body),
   claimTx: (body) => req("POST", "/api/tx/claim", body),
   listTx: (body) => req("POST", "/api/tx/list", body),

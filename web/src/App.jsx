@@ -85,6 +85,7 @@ export default function App() {
           <Nav />
           <div className="top-right">
             <a className="xbtn" href={X_URL} target="_blank" rel="noreferrer" aria-label="Hooker on X"><XIcon /></a>
+            <a className="xbtn" href={GITHUB_URL} target="_blank" rel="noreferrer" aria-label="Hooker on GitHub"><GitHubIcon /></a>
             {address
               ? <WalletMenu address={address} disconnect={disconnect} />
               : <button className="btn small" onClick={() => { connect().catch(() => {}); }}>Connect</button>}

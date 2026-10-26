@@ -45,6 +45,7 @@ const { OnlinePumpSdk } = require("@pump-fun/pump-sdk");
 const nacl = require("tweetnacl");
 import { LAUNCHED_STATUSES } from "../lib/graduate.mjs";
 import { openDb, listLaunches, getLaunch, registerLaunch, recordIntent } from "../lib/db.mjs";
+import { TICKER_LOCKS, DEFAULT_TICKER_LOCK, tickerKey, tickerHold, holdTicker, tickerLockOf } from "../lib/tickers.mjs";
 import { CUSTOM_LIMITS, raiseForCap } from "../lib/curve.mjs";
 import { ensureCustomTable, issueCustomConfig, customConfig, customConfigsForMint, checkCustomConfig } from "../lib/custom-configs.mjs";
 import { initVanity, issueForLaunch, issuedToIpSince, importIncoming, incomingDir, freshCount, RESERVATION_SECS, markLaunched } from "../lib/vanity.mjs";
@@ -275,8 +276,22 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       } catch (e) { console.error(new Date().toISOString(), "featured.json not reloaded:", e.message); }
     }, 5_000).unref();
   }
-  /** ⛔ display only (see lib/featured.mjs): the graduator reads the ledger itself, never this */
-  const shown = (l) => l && l.created_at >= hideBefore;
+  /** ⛔ display only (see lib/featured.mjs): the graduator reads the ledger itself, never this. `hidden`: a ticker vamp (lib/tickers.mjs) */
+  const shown = (l) => l && l.created_at >= hideBefore && !l.hidden;
+  /**
+   * The anti-vamp lock on a ticker right now (lib/tickers.mjs), or null: { until, preparing, permanent }. A featured coin's
+   * ticker (our own $HOOKER) is held for good.
+   */
+  const tickerNow = (symbol, creator = null) => {
+    const k = tickerKey(symbol);
+    if (k && featured.some((f) => tickerKey(f.symbol) === k)) return { until: null, preparing: false, permanent: true };
+    const h = tickerHold(db, symbol, { creator });
+    return h ? { until: h.until, preparing: h.preparing, permanent: false } : null;
+  };
+  const left = (secs) => secs > 2 * 86_400 ? `${Math.ceil(secs / 86_400)} days` : secs >= 3_600 ? `${Math.floor(secs / 3_600)} h ${Math.ceil((secs % 3_600) / 60)} min` : `${Math.max(1, Math.ceil(secs / 60))} min`;
+  const tickerRefusal = (typed, h) => { const symbol = String(typed).trim().replace(/^\$+/, ""); return h.permanent ? `$${symbol} is taken on Hooker: pick another ticker.`
+    : h.preparing ? `$${symbol} is being launched by another wallet right now: pick another ticker or try again in ${left(h.until - Math.floor(Date.now() / 1000))}.`
+    : `$${symbol} was launched on Hooker recently and is locked: it can be used again in ${left(h.until - Math.floor(Date.now() / 1000))}.`; };
   const summarizeFeatured = async (f) => {
     // a featured coin's own logo (server/ca-watch.mjs points it at /api/img/<cid>) must be servable like a launch's
     if (f.image.startsWith("/api/img/")) knowCid(f.image.slice("/api/img/".length));
@@ -336,6 +351,15 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       return { on: true, wallet: env.burnWallet.toBase58(), hookerMint: env.hookerMint.toBase58(), coins, totals: { solSpent: Number(t.spent) / 1e9, hookerBurned: Number(t.burned) / 1e6, burns: t.n, usdSpent: usd ? (Number(t.spent) / 1e9) * usd : null }, waitingSol: waiting, rows: all.slice(0, 50) };
     }),
 
+    /** Whether a ticker is free to launch on Hooker now (the launch form's hint): { symbol, locked, until, preparing, permanent }. */
+    "GET /api/ticker": async ({ query } = {}) => {
+      const symbol = String((typeof query?.get === "function" ? query.get("symbol") : query?.symbol) ?? "").trim().slice(0, 10);
+      const creator = String((typeof query?.get === "function" ? query.get("creator") : query?.creator) ?? "") || null;
+      if (!tickerKey(symbol)) return { symbol, locked: false };
+      const h = tickerNow(symbol, creator);
+      return { symbol, locked: !!h, until: h?.until ?? null, preparing: !!h?.preparing, permanent: !!h?.permanent, ...(h ? { why: tickerRefusal(symbol, h) } : {}) };
+    },
+
     "GET /api/health": async () => ({ ok: true, slot: await cached("slot", 2_000, () => conn.getSlot("confirmed")), hookKeys: freshCount(db) }),
 
     "GET /api/info": async () => {
@@ -354,6 +378,7 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
         fomoOnly: env.fomoOnlyEnabled,
         v3Rules: env.v3Rules,
         economics: ECONOMICS,
+        tickerLocks: { options: Object.entries(TICKER_LOCKS).map(([id, secs]) => ({ id, secs })), default: DEFAULT_TICKER_LOCK },
         feeTiers: Object.entries(FEE_TIERS).map(([t, f]) => ({ tier: Number(t), label: f.label, ...tierSplit(Number(t)) })),
         defaults: DEFAULT_RULES,
         sizes,
@@ -415,7 +440,7 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
         list = { kind: rules.allowlist ? "allow" : "block", count: d?.count ?? 0, sealed: !!d?.sealed, openUntil: rules.launchTs + LIST_OPEN_SECS };
       }
       const live = rules && needsState(rules) ? await liveOf(mint, rules, chainTime) : rules?.oscKind ? { oscCapBps: oscCapBps(rules, null, chainTime) } : null;
-      return { ...(await summarize(l, prog[l.pool])), meta, rules, list, live, chainTime, retrying: l.status !== "trading" && l.status !== "done" && !!l.error, stalled: l.status === "stalled" };
+      return { ...(await summarize(l, prog[l.pool])), meta, rules, list, live, chainTime, tickerLock: tickerLockOf(db, mint), retrying: l.status !== "trading" && l.status !== "done" && !!l.error, stalled: l.status === "stalled" };
     },
 
     /** Whether a wallet is on a token's allow- or blocklist. */
@@ -506,6 +531,11 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       const name = String(body.name ?? "").trim(), symbol = String(body.symbol ?? "").trim(), uri = String(body.uri ?? "").trim();
       if (!name || name.length > 32) throw status(400, "name: 1–32 characters");
       if (!symbol || symbol.length > 10) throw status(400, "symbol: 1–10 characters");
+      if (!tickerKey(symbol)) throw status(400, "symbol: at least one visible character");
+      // the anti-vamp lock this launch puts on its ticker, and whether another launch holds it now
+      const tickerLock = body.tickerLock == null ? DEFAULT_TICKER_LOCK : String(body.tickerLock);
+      if (!TICKER_LOCKS[tickerLock]) throw status(400, `ticker lock must be one of ${Object.keys(TICKER_LOCKS).join(", ")}`);
+      { const h = tickerNow(symbol, creator.toBase58()); if (h) throw status(409, tickerRefusal(symbol, h)); }
       // ⛔ 120, not pump.fun's 200: our own uploads are 80 characters, and the launch transaction (which
       // carries name, symbol and URI) only fits in 1,232 bytes with every rule on if the URI stays short
       if (!/^https:\/\//.test(uri) || uri.length > URI_MAX || !cidOf(uri) || !CID_RE.test(cidOf(uri))) throw status(400, "metadata must be uploaded to IPFS first (it is permanent on the Pumpfun token)");
@@ -567,6 +597,9 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
         if (await lutFor()) throw status(400, `these rules together do not fit in one Solana transaction (${launchSize(tx)} of 1,232 bytes): drop a rule or shorten the name, ticker or links`);
         throw status(503, "this launch does not fit in one transaction yet: try again in a few minutes"); // the table is being made
       }
+      // ⛔ checked again with no await between the check and the hold: two wallets building the same ticker cannot both pass
+      { const h = tickerNow(symbol, creator.toBase58()); if (h) throw status(409, tickerRefusal(symbol, h)); }
+      holdTicker(db, { mint: mint.publicKey.toBase58(), symbol, creator: creator.toBase58(), lockSecs: TICKER_LOCKS[tickerLock] });
       // the pair choice, for the graduation service (the same choice is in the tx's memo, for everyone else)
       if (pair) recordIntent(db, mint.publicKey.toBase58(), pair, pumpFeeBps);
       else db.prepare("DELETE FROM launch_intents WHERE mint = ?").run(mint.publicKey.toBase58());
