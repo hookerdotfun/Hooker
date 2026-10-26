@@ -35,7 +35,7 @@ import { loadConfigState, feeIsFlat, startFeePct, configFor } from "../lib/confi
 import { pumpMarketCap } from "../lib/pumpprice.mjs";
 import { createLander } from "../lib/lander.mjs";
 import { listPairs, pairMemo, MAX_CREATOR_FEE_BPS } from "../lib/pairs.mjs";
-import { loadFeatured, loadFeaturedEvm, featuredSummary, loadHideBefore } from "../lib/featured.mjs";
+import { loadFeatured, featuredSummary, loadHideBefore, featuredPath } from "../lib/featured.mjs";
 import { createRequire } from "node:module";
 import { randomBytes, createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, statSync, readdirSync, unlinkSync } from "node:fs";
@@ -45,7 +45,6 @@ const { OnlinePumpSdk } = require("@pump-fun/pump-sdk");
 const nacl = require("tweetnacl");
 import { LAUNCHED_STATUSES } from "../lib/graduate.mjs";
 import { openDb, listLaunches, getLaunch, registerLaunch, recordIntent } from "../lib/db.mjs";
-import { createEvm } from "../lib/evm.mjs";
 import { CUSTOM_LIMITS, raiseForCap } from "../lib/curve.mjs";
 import { ensureCustomTable, issueCustomConfig, customConfig, customConfigsForMint, checkCustomConfig } from "../lib/custom-configs.mjs";
 import { initVanity, issueForLaunch, issuedToIpSince, importIncoming, incomingDir, freshCount, RESERVATION_SECS, markLaunched } from "../lib/vanity.mjs";
@@ -57,7 +56,7 @@ const CUSTOM_CONFIG_RENT = 10_000_000;
 const NO_MIGRATION_RULES = Object.freeze({ holderShareBps: "Holder share", burnBps: "Auto burn", feeBaseBps: "Dynamic fee", feePerSolBps: "Dynamic fee", feeCapBps: "Dynamic fee",
   holderRewards: "Creator fees to holders", kingOn: "King of the Hill" });
 
-export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb(`${dataDir}/hooker.db`), configs = null, hookProgram = env.hookProgram, fetchImpl = fetch, launchesPerIpPerHour = 5, vanityReserve, featured: featuredFixed = null, hideBefore: hideBeforeFixed = null, evm: evmOpt, platform = env.expectedPlatform } = {}) {
+export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb(`${dataDir}/hooker.db`), configs = null, hookProgram = env.hookProgram, fetchImpl = fetch, launchesPerIpPerHour = 5, vanityReserve, featured: featuredFixed = null, hideBefore: hideBeforeFixed = null, platform = env.expectedPlatform } = {}) {
   const dbc = dbcClient(conn);
   const pumpSdk = new OnlinePumpSdk(conn);
   // the configs new launches use, re-read every minute: the graduator replaces them when pump.fun
@@ -102,16 +101,6 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       try { const r = await fetchImpl(url, { signal: AbortSignal.timeout(4000) }); const v = Number(pick(await r.json())); if (v > 1 && v < 100_000) return v; } catch {}
     }
     throw new Error("no SOL price feed answered");
-  });
-  const ETH_FEEDS = [
-    ["https://api.coinbase.com/v2/prices/ETH-USD/spot", (j) => j.data?.amount],
-    ["https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd", (j) => j.ethereum?.usd],
-  ];
-  const ethUsd = () => cached("eth:usd", 60_000, async () => {
-    for (const [url, pick] of ETH_FEEDS) {
-      try { const r = await fetchImpl(url, { signal: AbortSignal.timeout(4000) }); const v = Number(pick(await r.json())); if (v > 10 && v < 1_000_000) return v; } catch {}
-    }
-    throw new Error("no ETH price feed answered");
   });
   /** pump.fun's curve today, from its Global account (what new configs are made from) */
   const pumpLive = () => cached("pump:global", 600_000, async () => pumpParams(await pumpSdk.fetchGlobal()));
@@ -271,29 +260,26 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
   /** A coin launched straight on pump.fun (featured.json), priced the way a graduated launch is. */
   // ⭐ featured.json is re-read every 5 s when it changed (scripts/set-ca.mjs writes it): a new CA is live in seconds,
   // no restart, no rebuild. A test passes `featured` / `hideBefore` and keeps them fixed.
-  let featured = featuredFixed ?? loadFeatured(), hideBefore = hideBeforeFixed ?? loadHideBefore();
+  let featured = featuredFixed ?? loadFeatured(featuredPath(dataDir)), hideBefore = hideBeforeFixed ?? loadHideBefore(featuredPath(dataDir));
   let featuredByMint = new Map(featured.map((f) => [f.mint, f]));
-  // the Pons side's own featured coins (featured.json evmCoins, scripts/set-ca-pons.mjs), reloaded with the rest
-  let featuredEvm = featuredFixed ? [] : loadFeaturedEvm();
   if (!featuredFixed) {
-    const file = new URL("../featured.json", import.meta.url);
-    let seen = 0;
+    let seen = 0, seenFile = null;
     setInterval(() => {
       try {
-        const m = statSync(file).mtimeMs;
-        if (m === seen) return;
-        const next = loadFeatured(); // a malformed file throws here and the last good list stays
-        const nextEvm = loadFeaturedEvm();
+        const file = featuredPath(dataDir), m = statSync(file).mtimeMs;
+        if (m === seen && file === seenFile) return;
+        const next = loadFeatured(file); // a malformed file throws here and the last good list stays
         featured = next; featuredByMint = new Map(featured.map((f) => [f.mint, f]));
-        if (!featuredFixed) featuredEvm = nextEvm;
-        if (hideBeforeFixed == null) hideBefore = loadHideBefore();
-        seen = m;
+        if (hideBeforeFixed == null) hideBefore = loadHideBefore(file);
+        seen = m; seenFile = file;
       } catch (e) { console.error(new Date().toISOString(), "featured.json not reloaded:", e.message); }
     }, 5_000).unref();
   }
   /** ⛔ display only (see lib/featured.mjs): the graduator reads the ledger itself, never this */
   const shown = (l) => l && l.created_at >= hideBefore;
   const summarizeFeatured = async (f) => {
+    // a featured coin's own logo (server/ca-watch.mjs points it at /api/img/<cid>) must be servable like a launch's
+    if (f.image.startsWith("/api/img/")) knowCid(f.image.slice("/api/img/".length));
     const p = await pumpLive().catch(() => null);
     // a featured coin paired with a custom pair is priced in that pair, converted to SOL (lib/pumpprice.mjs)
     let quote = null;
@@ -338,7 +324,7 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
   const routes = {
     /** The burn ledger: what the burn wallet claimed and burned (lib/flywheel.mjs), for the site. */
     "GET /api/burns": async () => cached("burns", 10_000, async () => {
-      if (!env.burnWallet) return { on: false };
+      if (!env.burnWallet || !env.hookerMint) return { on: false };
       const rows = db.prepare("SELECT at, kind, sig, dry, lamports_in, lamports_spent, hooker_burned FROM burns ORDER BY id DESC LIMIT 50").all();
       const t = db.prepare("SELECT COALESCE(SUM(CAST(lamports_spent AS INTEGER)), 0) spent, COALESCE(SUM(CAST(hooker_burned AS INTEGER)), 0) burned, COALESCE(SUM(CAST(lamports_in AS INTEGER)), 0) claimed, COUNT(*) n FROM burns WHERE dry = 0 AND kind = 'burn'").get();
       const coins = db.prepare("SELECT COUNT(*) n FROM launches WHERE fee_to = 'burn' AND pump_mint IS NOT NULL").get().n;
@@ -346,12 +332,8 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
       const [vault, bal] = await Promise.all([pumpSdk.getCreatorVaultQuoteBalances(env.burnWallet).catch(() => []), conn.getBalance(env.burnWallet, "confirmed").catch(() => 0)]);
       const waiting = Number(vault.find((b) => b.mint.equals(NATIVE_MINT))?.total?.toString() ?? 0) / 1e9 + bal / 1e9;
       const usd = await solUsd().catch(() => null);
-      // the Robinhood Chain side's claims and bridges (server/evm-graduator.mjs writes data/evm-burn.json)
-      let rhc = [];
-      try { rhc = JSON.parse(readFileSync(`${dataDir}/evm-burn.json`, "utf8")).rows.map((r) => ({ at: r.at, kind: r.kind === "bridge" ? "bridge" : "claim-rhc", sig: r.hash, dry: !!r.dry, eth: Number(r.eth), sol: r.sol != null ? Number(r.sol) : null })); } catch {}
-      const all = [...rows.map((r) => ({ at: r.at, kind: r.kind, sig: r.sig, dry: !!r.dry, solIn: r.lamports_in ? Number(r.lamports_in) / 1e9 : null, solSpent: r.lamports_spent ? Number(r.lamports_spent) / 1e9 : null, hookerBurned: r.hooker_burned ? Number(r.hooker_burned) / 1e6 : null })), ...rhc].sort((x, y) => y.at - x.at);
-      const rhcCoins = evm ? (await evm.listAll().catch(() => [])).filter((l) => l.graduated?.ponsToken && !l.rules?.holderRewards).length : 0;
-      return { on: true, wallet: env.burnWallet.toBase58(), hookerMint: env.hookerMint.toBase58(), coins: coins + rhcCoins, totals: { solSpent: Number(t.spent) / 1e9, hookerBurned: Number(t.burned) / 1e6, burns: t.n, usdSpent: usd ? (Number(t.spent) / 1e9) * usd : null }, waitingSol: waiting, rows: all.slice(0, 50) };
+      const all = [...rows.map((r) => ({ at: r.at, kind: r.kind, sig: r.sig, dry: !!r.dry, solIn: r.lamports_in ? Number(r.lamports_in) / 1e9 : null, solSpent: r.lamports_spent ? Number(r.lamports_spent) / 1e9 : null, hookerBurned: r.hooker_burned ? Number(r.hooker_burned) / 1e6 : null }))];
+      return { on: true, wallet: env.burnWallet.toBase58(), hookerMint: env.hookerMint.toBase58(), coins, totals: { solSpent: Number(t.spent) / 1e9, hookerBurned: Number(t.burned) / 1e6, burns: t.n, usdSpent: usd ? (Number(t.spent) / 1e9) * usd : null }, waitingSol: waiting, rows: all.slice(0, 50) };
     }),
 
     "GET /api/health": async () => ({ ok: true, slot: await cached("slot", 2_000, () => conn.getSlot("confirmed")), hookKeys: freshCount(db) }),
@@ -390,11 +372,8 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
      * that landed, and refusals that landed as failed transactions (a bot or app that skips the dry run), with the
      * hook's reason. One read per token every 20 s at most, shared by every visitor; each transaction read once.
      */
-    /** The live trades box. `?chain=sol|rhc` keeps one chain (the site's Pumpfun or Pons mode); none mixes both. */
-    "GET /api/trades": async ({ query } = {}) => {
-      const c = typeof query?.get === "function" ? query.get("chain") : query?.chain;
-      const want = c === "sol" || c === "rhc" ? c : null;
-      const solRows = () => cached("trades:sol", 10_000, async () => {
+    "GET /api/trades": async () => {
+      const { rows, tokens } = await cached("trades:sol", 10_000, async () => {
         const live = listLaunches(db, { limit: 50 }).filter((l) => shown(l) && l.status === "trading").slice(0, 10);
         const rows = [];
         let reads = 0;
@@ -410,25 +389,16 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
         }
         return { rows, tokens: live.length };
       });
-      // Robinhood Chain trades (Pons launches)
-      const rhcRows = () => cached("trades:rhc", 10_000, async () => evm
-        ? { rows: await evm.recentTrades(12).catch(() => []), tokens: (await evm.listAll().catch(() => [])).filter((l) => l.status === "trading").length }
-        : { rows: [], tokens: 0 });
-      const parts = await Promise.all([want !== "rhc" ? solRows() : null, want !== "sol" ? rhcRows() : null]);
-      const rows = parts.flatMap((p) => p?.rows ?? []).sort((a, b) => b.time - a.time);
-      return { trades: rows.slice(0, 12), tokens: parts.reduce((n, p) => n + (p?.tokens ?? 0), 0) };
+      return { trades: rows.sort((a, b) => b.time - a.time).slice(0, 12), tokens };
     },
 
     "GET /api/launches": async () => {
       const ls = listLaunches(db, { limit: 200 }).filter(shown);
       const prog = await progressOf(ls.map((l) => l.pool));
       const sol = await Promise.all(ls.map(async (l) => ({ chain: "sol", ...(await summarize(l, prog[l.pool])), meta: await metaQuick(l.mint) })));
-      // Robinhood Chain launches (Pons) mixed in by launch time; a slow chain read never holds up the list
-      const rhc = evm ? await Promise.race([evm.listAll().catch(() => []), new Promise((r) => setTimeout(() => r([]), 4_000))]) : [];
-      const out = [...sol, ...rhc].sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
-      // featured coins (our own $HOOKER) are pinned first
-      const featRhc = evm ? (await Promise.all(featuredEvm.map((f) => evm.summarizeFeatured(f).catch(() => null)))).filter(Boolean) : [];
-      return { launches: [...(await Promise.all(featured.map(summarizeFeatured))), ...featRhc, ...out] };
+      const out = sol.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+      // featured coins (featured.json) are pinned first
+      return { launches: [...(await Promise.all(featured.map(summarizeFeatured))), ...out] };
     },
 
     "GET /api/token/:mint": async ({ params }) => {
@@ -816,9 +786,6 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
     },
   };
 
-  // ── Robinhood Chain: launches that graduate into Pons V2 (lib/evm.mjs), on when EVM_LAUNCHPAD is set ─
-  const evm = evmOpt === undefined ? createEvm({ cached, ethUsd, knowCid, featuredEvm: () => featuredEvm }) : evmOpt;
-  if (evm) Object.assign(routes, evm.routes);
 
   // ── IPFS upload via pump.fun's route (it sends no CORS header, so the browser can't read it) ─
   const MIN_DEV_BUY = 10_000_000n;
@@ -903,15 +870,44 @@ export function createApi({ conn = connect(), dataDir = env.dataDir, db = openDb
     if (!file || typeof file === "string") throw status(400, "an image file is required");
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (!wholeImage(bytes)) throw status(415, "the image must be a complete PNG, JPEG, GIF or WebP file");
+    const fields = {};
+    for (const f of FIELDS) { const v = form.get(f); if (typeof v === "string" && v.length <= 1000) fields[f] = v; }
+    if (env.pinataJwt) return pinataUpload(bytes, imageType(bytes), fields);
     const out = new FormData();
     out.append("file", new Blob([bytes], { type: file.type || "application/octet-stream" }), "image");
-    for (const f of FIELDS) { const v = form.get(f); if (typeof v === "string" && v.length <= 1000) out.append(f, v); }
+    for (const [f, v] of Object.entries(fields)) out.append(f, v);
     out.append("showName", "true");
     const r = await fetchImpl(env.ipfsUpstream, { method: "POST", body: out });
     if (!r.ok) throw status(502, `metadata upload failed upstream (HTTP ${r.status})`);
     const j = await r.json();
     if (!j.metadataUri) throw status(502, "metadata upload returned no URI");
     return { uri: j.metadataUri, metadata: j.metadata ?? null };
+  }
+
+  /**
+   * ⛔ pump.fun closed its open uploader (pump.fun/api/ipfs, 19 Oct 2026: HTML 500; the new route needs a pump.fun session).
+   * With PINATA_JWT set we pin ourselves (Pinata v3 Files API, public network): the image, then pump.fun's JSON shape around
+   * it. Both content-addressed, so the URI can never point at something else.
+   */
+  async function pinataUpload(bytes, type, fields) {
+    const pin = async (blob, name) => {
+      const f = new FormData();
+      f.append("file", blob, name);
+      f.append("network", "public");
+      f.append("name", name);
+      const r = await fetchImpl(`${env.pinataUploads}/v3/files`, { method: "POST", headers: { authorization: `Bearer ${env.pinataJwt}` }, body: f, signal: AbortSignal.timeout(30_000) });
+      if (!r.ok) throw status(502, `metadata upload failed upstream (HTTP ${r.status})`);
+      const cid = (await r.json().catch(() => ({})))?.data?.cid;
+      if (!CID_RE.test(cid ?? "")) throw status(502, "metadata upload returned no content hash");
+      return cid;
+    };
+    const ext = { "image/png": "png", "image/gif": "gif", "image/webp": "webp" }[type] ?? "jpg";
+    const sym = String(fields.symbol ?? "token").replace(/[^\w-]/g, "").slice(0, 16) || "token";
+    const imageCid = await pin(new Blob([bytes], { type: type ?? "application/octet-stream" }), `${sym}-image.${ext}`);
+    const metadata = { name: fields.name ?? "", symbol: fields.symbol ?? "", description: fields.description ?? "", image: `https://ipfs.io/ipfs/${imageCid}`, showName: true, createdOn: "https://pump.fun",
+      ...(fields.twitter ? { twitter: fields.twitter } : {}), ...(fields.telegram ? { telegram: fields.telegram } : {}), ...(fields.website ? { website: fields.website } : {}) };
+    const metaCid = await pin(new Blob([JSON.stringify(metadata)], { type: "application/json" }), `${sym}-metadata.json`);
+    return { uri: `https://ipfs.io/ipfs/${metaCid}`, metadata };
   }
 
   // ── plumbing ────────────────────────────────────────────────────────────────────────────────

@@ -1,26 +1,16 @@
 # Hooker
 
-**Launch a Pumpfun or Pons token with rules built into the token itself.** · [hooker.fun](https://hooker.fun) · [@hookerdotfun](https://x.com/hookerdotfun)
+**Launch a Pumpfun token with rules built into the token itself.** · [hooker.fun](https://hooker.fun) · [@hookerdotfun](https://x.com/hookerdotfun)
 
-A Hooker token carries its rules (hooks) in the token itself. The creator picks the hooks at launch, the chain runs them on every buy, sell and transfer, and a trade that breaks the rules never lands. The token trades on a bonding curve shaped exactly like the one it graduates into, and when the curve fills it **graduates into a normal coin** in one transaction: the curve's money creates and buys the new coin, and every holder receives their share automatically.
+A Hooker token carries its rules (hooks) in the token itself. The creator picks the hooks at launch, the chain runs them on every buy, sell and transfer, and a trade that breaks the rules never lands. The rules are a Solana Token-2022 **transfer hook**. The token trades on a Meteora bonding curve shaped exactly like Pumpfun's, and when the curve fills it **graduates into a normal Pumpfun coin** in one transaction: the curve's SOL creates and buys the new coin, and every holder receives their share automatically. Any Solana wallet works (Phantom, Solflare, Backpack, …).
 
-It runs on two chains:
+Every token address (the Hooker token and its Pumpfun coin) ends in `hook`.
 
-| | Solana | Robinhood Chain |
-|---|---|---|
-| Graduates into | a **Pumpfun** coin | a **Pons V2** coin |
-| The rules | a Token-2022 **transfer hook** | the **token contract** itself |
-| The curve | a Meteora bonding curve shaped like Pumpfun's | Hooker's own curve, shaped like Pons's |
-| Paid in | SOL | ETH |
-| Wallets | Phantom, Solflare, Backpack, … | MetaMask, Rabby, … |
-
-Every Solana token address (the Hooker token and its Pumpfun coin) ends in `hook`.
-
-**The burn.** Every Pumpfun coin that graduates names Hooker's burn wallet as its creator, so its creator fees buy $HOOKER and burn it, forever (`lib/flywheel.mjs`). The two chains are separate: a Pons coin's creator fees go to Hooker's graduation wallet on Robinhood Chain, for $HOOKER on Pons, never the Solana $HOOKER. A creator can route a coin's fees to its holders instead with the "Creator fees to holders" hook. Every claim and burn is a public transaction.
+**Creator fees.** Every Pumpfun coin that graduates names the launch's creator as its creator, so its creator fees go to them. A creator can route a coin's fees to its holders instead with the "Creator fees to holders" hook.
 
 ## Hooks
 
-All hooks are off by default; a creator combines any of them. Both chains have every hook except two that only exist on Solana.
+All hooks are off by default; a creator combines any of them.
 
 | Hook | What it does |
 |---|---|
@@ -29,10 +19,10 @@ All hooks are off by default; a creator combines any of them. Both chains have e
 | Launch window | A tighter cap for the first minutes |
 | Rising max per wallet | The cap starts small and rises on a timer |
 | Trade guard | No single trade can move more than a set share of supply |
-| Sniper-fee cap | Buys paying sniper-sized priority fees or tips are refused at launch (Solana only: Robinhood Chain's sequencer ignores priority fees and has no tips) |
+| Sniper-fee cap | Buys paying sniper-sized priority fees or tips are refused at launch |
 | Anti-bundle | Only a few buys can land in one block |
 | Anti-snipe fee | The trading fee starts at 50% and falls to 1% over two minutes |
-| FOMO only | Only the FOMO app can buy; selling works anywhere (Solana only: FOMO does not trade on Robinhood Chain) |
+| FOMO only | Only the FOMO app can buy; selling works anywhere |
 | Trading hours | Trades only on chosen days and hours; it can follow US or European daylight saving on chain and close sells too |
 | Market hours | Trades like a stock: Monday to Friday, 9:30 to 16:00 New York time, closed on US market holidays |
 | Anti-dump caps | Separate caps on one buy and one sell, the creator's sells included |
@@ -43,14 +33,14 @@ All hooks are off by default; a creator combines any of them. Both chains have e
 | P2P-only | Only the creator buys from the curve and nobody sells to it; tokens move wallet to wallet |
 | Hot potato | Whoever bought last cannot sell or send until another wallet buys |
 | Ping pong | Buys and sells take turns; one transaction cannot take both turns |
-| King of the Hill | The biggest buy holds the crown and earns 0.3% of every trade's value while it reigns, paid from Hooker's share of the fees, in SOL or in the Pons launch's asset |
+| King of the Hill | The biggest buy holds the crown and earns 0.3% of every trade's value while it reigns, paid from Hooker's share of the fees, in SOL |
 | Breathing cap · Momentum · Resonance · Coupled resonator | The per-buy cap is driven by an oscillator: a fixed cycle, or one that every buy kicks |
 | Size fee · Auto burn · Holder share | Bigger buys pay more, a share of every buy is burned, part of the fees buys extra coins for holders |
-| Creator fees to holders | After graduation, the coin's creator fees go to its holders instead of the $HOOKER burn (Pumpfun holder rewards, or Pons holder fee sharing) |
+| Creator fees to holders | After graduation, the coin's creator fees go to its holders instead of its creator (Pumpfun holder rewards) |
 
 Unless a hook says otherwise (P2P-only, hot potato, ping pong, sell caps, hours that close sells), holders can always sell back into the curve; every hook that limits selling says so on the token's page.
 
-**At launch a creator also picks** where it graduates, a graduation size (35–100% of Pumpfun's or Pons's own), and their fee per trade (default, 1%, 2% or 3%). On Pumpfun they can pick a **custom pair**: one of Pumpfun's own custom-pair tokens (BTC, ETH, PUMP, xStocks, …) with at least $1M of liquidity, with a Pumpfun creator fee of 0.01–3%. At graduation the curve's SOL is swapped into the pair through Jupiter; if the pair no longer qualifies then, the coin pairs with SOL instead. On Pons they can pick any of Pons's **pair assets** (USDG, the xStocks, cbBTC, gold, …): the curve then takes that asset, with Pons's own numbers for it, and the coin graduates paired with it, no swap in between.
+**At launch a creator also picks** a graduation size (35–100% of Pumpfun's own, or a **custom cap** anywhere from about 32 to 100,000 SOL of market cap, or **No migration**: the token stays on its curve with its hooks forever), and their fee per trade (default, 1%, 2% or 3%). They can pick a **custom pair**: one of Pumpfun's own custom-pair tokens (BTC, ETH, PUMP, xStocks, …) with at least $1M of liquidity, with a Pumpfun creator fee of 0.01–3%. At graduation the curve's SOL is swapped into the pair through Jupiter; if the pair no longer qualifies then, the coin pairs with SOL instead.
 
 ## How it is built
 
@@ -58,31 +48,28 @@ Unless a hook says otherwise (P2P-only, hot potato, ping pong, sell caps, hours 
 |---|---|
 | `programs/hooker-hook` | The Solana transfer hook (native Rust). Per-token rules at PDA `["cfg", mint]`, lists at `["list", mint]`; `src/v3.rs` holds the newer hooks, and the ones that remember something (potato, turns, volume, oscillators, the King) keep it in one account per token, `["state", mint]`, never one per buyer, so every app and router can trade them |
 | `lib/king.mjs` | King of the Hill payouts: copies each reign's traded value from chain into a ledger and pays each King, exactly once |
-| `evm/src/HookerToken.sol` | The Robinhood Chain token: the same rules in its transfer, and each holder's balance × time for holder share. Every launch is a minimal-proxy clone of one implementation |
-| `evm/src/HookerMath.sol` | The newer hooks' arithmetic, ported one to one from `v3.rs`: the oscillators, the sine, and the calendar for daylight saving and US market holidays |
-| `evm/src/HookerLaunchpad.sol` | The Robinhood Chain curve, and its graduation: Pons V2 `launchAndBuy` in one transaction, then every holder paid on chain |
 | `lib/rules.mjs` | The rules layout, validation (mirrors the program) and refusal messages |
 | `lib/curve.mjs`, `lib/configs.mjs` | Economics and the Pumpfun-shaped Meteora curves (one config per size × anti-snipe × fee step), remade when Pumpfun changes its curve |
-| `lib/launch.mjs` | The Solana launch transaction (pool + rules + the creator's buy in one transaction) and trade builders |
-| `lib/settle.mjs` | Replays a Solana token's on-chain history into each holder's Pumpfun allocation |
-| `lib/graduate.mjs` | The Solana graduation service: idempotent, ledger-first steps (every signature stored before it is sent) |
+| `lib/launch.mjs` | The launch transaction (pool + rules + the creator's buy in one transaction) and trade builders |
+| `lib/settle.mjs` | Replays a token's on-chain history into each holder's Pumpfun allocation |
+| `lib/graduate.mjs` | The graduation service: idempotent, ledger-first steps (every signature stored before it is sent) |
 | `lib/pairs.mjs` | Custom pairs: Pumpfun's quote-control list, liquidity and safety checks, the Jupiter swap |
 | `lib/pumpprice.mjs` | Prices a coin in every phase: Hooker curve → Pumpfun curve → PumpSwap |
-| `lib/evm.mjs` | The Robinhood Chain API: launches (in ETH or any Pons pair asset), quotes, trades, on-chain USD prices, and the transactions the site asks a wallet to send |
-| `lib/pons-assets.mjs` | Pons's pair assets, checked against the factory before they are offered |
-| `lib/flywheel.mjs` | The burn: claims the burn wallet's creator fees, buys $HOOKER on PumpSwap and burns it |
-| `lib/lander.mjs` | Rebroadcasts a signed Solana transaction until it lands or provably cannot |
+| `lib/custom-configs.mjs` | Custom caps and No migration: one Meteora config per launch, the creator pays its rent |
+| `lib/flywheel.mjs` | An optional burn (off on hooker.fun): claims a burn wallet's creator fees, buys a coin on PumpSwap and burns it |
+| `lib/lander.mjs` | Rebroadcasts a signed transaction until it lands or provably cannot |
 | `lib/relay.mjs` | What the API will relay: only the transactions the site builds |
 | `server/api.mjs` | The HTTP API. It builds every transaction; the browser only signs |
-| `server/graduator.mjs`, `server/evm-graduator.mjs` | The graduation services, one per chain |
+| `server/graduator.mjs` | The graduation service |
+| `server/ca-watch.mjs` | Puts the platform coin on the site the moment its mint exists |
 | `server/gate.mjs` | An optional login gate in front of the site |
-| `web/` | The site (React 19 + Vite; Wallet Standard for Solana, EIP-6963 for EVM wallets; no chain library in the browser) |
+| `web/` | The site (React 19 + Vite; Wallet Standard for Solana wallets; no chain library in the browser) |
 | `tools/grind` | Grinds `…hook` vanity keys |
-| `test/`, `evm/test/` | Unit tests and end-to-end suites against a local validator and a fork of Robinhood Chain |
+| `test/` | Unit tests and end-to-end suites against a local validator |
 
 ## Running it locally
 
-Requirements: Node 22+, the Solana CLI (Agave 4.x, for `solana-test-validator` and `cargo-build-sbf`), Rust, and Foundry for the Robinhood Chain side.
+Requirements: Node 22+, the Solana CLI (Agave 4.x, for `solana-test-validator` and `cargo-build-sbf`) and Rust.
 
 ```sh
 npm install && (cd web && npm install)
@@ -93,8 +80,6 @@ solana-keygen new --no-bip39-passphrase -o keys/test-app-forwarder-keypair.json 
 node scripts/make-pair-fixtures.mjs                                              # two real pair tokens, for the pair tests
 nohup ./scripts/validator.sh > validator.log 2>&1 &                              # a local validator with mainnet's Meteora + Pumpfun
 (cd tools/grind && cargo build --release) && tools/grind/target/release/hooker-grind hook 5 6 keys/test-vanity
-(cd evm && forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts@v5.7.0 --no-git && forge build)
-node scripts/evm-abi.mjs                                                         # the contracts' ABIs for the API
 ```
 
 Tests:
@@ -107,25 +92,20 @@ TEST_SIZES=2 node test/e2e-v3.mjs        # the newer hooks (ONLY=king,ping,… r
 (cd programs/hooker-hook && cargo test --lib)   # the hook's own tests: calendar, daylight saving, oscillators, the King's bar
 node test/api.mjs                        # the HTTP API
 TEST_SIZES=2 node test/e2e-pairs.mjs     # graduating into custom pairs (WBTC, an xStock), and the SOL fallback
-(cd evm && forge test)                   # every Robinhood Chain hook, no network
-node test/e2e-evm.mjs                    # Robinhood Chain: launch → trade → graduate into Pons → every holder paid
+node test/e2e-custom.mjs                 # custom caps (graduating past Pumpfun's own) and No migration
 ```
 
-The end-to-end suites run against the **real mainnet bytecode**: Meteora's bonding curve and Pumpfun cloned into the local validator, and a fork of live Robinhood Chain with the real Pons V2 contracts. `node scripts/evm-local.mjs` starts that fork with the launchpad deployed, to try the site against it.
+The end-to-end suites run against the **real mainnet bytecode**: Meteora's bonding curve and Pumpfun cloned into the local validator.
 
 ## On chain
 
-- $HOOKER on Solana (Pumpfun): `9BMbyUfW6g4ptTGqyZeLdKRMz9tM4ssSgUEKYK94hook`
-- $HOOKER on Robinhood Chain (Pons): `0xEcc7660f54aaBA88b9cBE5aa6D823603035D5F6F`
-- Solana hook program: `GE5TW1AFehhNFLYiSiaAkmbTjnHTB3hdhw6ZZFBP5sLV`
-- Robinhood Chain launchpad: `0x9151414adc57d8a77085d0f0f2fbb21269a3b42a`
-- Robinhood Chain token implementation (every launch is a clone of it): `0x3db35b372a2bd4be083dc9e3265f97e8a7d27a45`
-- Burn wallet (the creator of every graduated Pumpfun coin, buys and burns $HOOKER): `hookXkHBi86pLTAPxShbvXiQsAPuyDmnanfXDs38p8n`
+- $HOOKER (Pumpfun): `82FEcWhKWAhm4QdqV5oCr7NDgXRQuXbACAstBqrJhook`
+- Hook program: `5HFXZY3eJKvdy2EVJjB5kBkVYq7dfLPDvycroueUrst9`
 
 ## Security
 
 - The rules are enforced by the token on chain; nobody can change them after launch.
-- Graduation is run by Hooker's services with their own wallets: every step is a public transaction. On Solana every payout can be recomputed from the token's on-chain history (`lib/settle.mjs`); on Robinhood Chain the payout is computed by the contract itself, and `graduate` and `payout` can be called by anyone.
+- Graduation is run by Hooker's services with their own wallets: every step is a public transaction. Every payout can be recomputed from the token's on-chain history (`lib/settle.mjs`).
 - No keys are in this repository. `keys/`, `data/` and every `.env` are ignored.
 
 Found a problem? Reach us at [@hookerdotfun](https://x.com/hookerdotfun).

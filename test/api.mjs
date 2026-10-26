@@ -19,10 +19,16 @@ const db = openDb(`${DATA}/api.db`);
 db.exec("DELETE FROM launches; DELETE FROM pushes; DELETE FROM pending;");
 // IPFS upstream stand-in: records what was forwarded, answers like pump.fun
 let forwarded = null;
+const pinned = [];
 const fetched = [];
 const fakeFetch = async (url, init) => {
   fetched.push(String(url));
   if (String(url).includes("sol-price")) return new Response(JSON.stringify({ solPrice: 100 }), { status: 200 });
+  if (String(url).startsWith("http://pinata-stub/v3/files")) {
+    const f = init.body, name = f.get("file").name, auth = init.headers?.authorization;
+    pinned.push({ name, auth, network: f.get("network"), text: name.endsWith(".json") ? await f.get("file").text() : null });
+    return new Response(JSON.stringify({ data: { cid: name.endsWith(".json") ? "bafkreimetadatacid000000000000000000000000000000000000" : "bafkreiimagecid0000000000000000000000000000000000000000" } }), { status: 200 });
+  }
   if (String(url).includes("ipfs-upstream")) { forwarded = init.body; return new Response(JSON.stringify({ metadataUri: "https://ipfs.example/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", metadata: { name: "x" } }), { status: 200 }); }
   return new Response(JSON.stringify({ name: "x", symbol: "X", image: "https://ipfs.example/ipfs/QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX", website: "javascript:alert(1)", twitter: "https://x.com/hooker" }), { status: 200 });
 };
@@ -92,6 +98,16 @@ ok(up.status === 200 && up.json.uri === "https://ipfs.example/ipfs/QmYwAPJzv5CZs
 const svg = new FormData(); svg.append("file", new Blob(["<svg onload=alert(1)>"], { type: "image/svg+xml" }), "a.svg");
 await new Promise((r) => setTimeout(r, 5_100)); // one upload per IP per 5 s
 ok((await fetch(`${base}/api/ipfs`, { method: "POST", body: svg })).status === 415, "an SVG (a script) is refused as an image");
+// with PINATA_JWT set (pump.fun closed its open uploader 19 Oct 2026) the image, then pump.fun's JSON around it, are pinned by us
+env.pinataJwt = "test-jwt"; env.pinataUploads = "http://pinata-stub";
+await new Promise((r) => setTimeout(r, 5_100));
+const up2 = await fetch(`${base}/api/ipfs`, { method: "POST", body: form }).then(async (r) => ({ status: r.status, json: await r.json() }));
+const md = JSON.parse(pinned.find((p) => p.text)?.text ?? "{}");
+ok(up2.status === 200 && up2.json.uri === "https://ipfs.io/ipfs/bafkreimetadatacid000000000000000000000000000000000000" && pinned.length === 2
+  && pinned.every((p) => p.auth === "Bearer test-jwt" && p.network === "public") && pinned[0].name === "APIT-image.png"
+  && md.name === "Api Test" && md.symbol === "APIT" && md.image === "https://ipfs.io/ipfs/bafkreiimagecid0000000000000000000000000000000000000000" && md.showName === true && !("evil" in md),
+  "with PINATA_JWT: image then metadata pinned under our key, pump.fun's JSON shape, unknown fields dropped");
+env.pinataJwt = "";
 
 // launch through the API
 { const unsigned = await call("POST", "/api/tx/launch", { creator: creator.publicKey.toBase58(), gradSol: G0, name: "X", symbol: "X", uri: "https://ipfs.example/ipfs/QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG", devBuySol: 0.1 });
@@ -120,7 +136,7 @@ ok(t.symbol === "APIT" && t.rules.maxWalletBps === 1_000 && t.rules.burnBps === 
 ok(t.solUsd === 100 && Math.abs(t.marketCapUsd - t.marketCapSol * 100) < 1e-6 && (await call("GET", "/api/info")).json.solUsd === 100, `market caps come in dollars too ($${t.marketCapUsd.toFixed(0)} at $100/SOL)`);
 ok(t.meta?.website === null && t.meta?.twitter === "https://x.com/hooker", "a javascript: link in the metadata is dropped (XSS), an https link is kept");
 const PRICE_FEEDS = /sol-price|jup\.ag|coingecko\.com/; // fixed URLs in our code, never creator-supplied
-ok(fetched.filter((u) => !u.includes("ipfs-upstream") && !PRICE_FEEDS.test(u)).every((u) => /^https:\/\/(pump\.mypinata\.cloud|gateway\.pinata\.cloud|ipfs\.filebase\.io|ipfs\.io)\/ipfs\//.test(u)), "the server only fetches IPFS content through public gateways (no SSRF into the box)");
+ok(fetched.filter((u) => !u.includes("ipfs-upstream") && !u.startsWith("http://pinata-stub/") && !PRICE_FEEDS.test(u)).every((u) => /^https:\/\/(pump\.mypinata\.cloud|gateway\.pinata\.cloud|ipfs\.filebase\.io|ipfs\.io)\/ipfs\//.test(u)), "the server only fetches IPFS content through public gateways (no SSRF into the box)");
 ok(t.meta?.image === "/api/img/QmT5NvUtoM5nWFfrQdVrFtvGfKFmG7AHE8P34isapyhCxX", "the token page reads the image from the metadata and serves it from hooker.fun itself");
 
 // trading through the API

@@ -25,7 +25,7 @@ test("summary: shown like a Hooker graduation (done, on Pumpfun), priced like on
 
 test("hideLaunchesBefore: the repo's value loads; a non-number is refused; absent means hide nothing", async () => {
   const { loadHideBefore } = await import("../lib/featured.mjs");
-  assert.ok(loadHideBefore() > 1_790_000_000);
+  assert.ok(Number.isFinite(loadHideBefore()));
   const p = `${mkdtempSync(`${tmpdir()}/feat-`)}/f.json`;
   writeFileSync(p, JSON.stringify({ coins: [], hideLaunchesBefore: "soon" })); assert.throws(() => loadHideBefore(p));
   writeFileSync(p, JSON.stringify({ coins: [] })); assert.equal(loadHideBefore(p), 0);

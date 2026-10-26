@@ -1,6 +1,5 @@
 import { Link } from "react-router-dom";
 import { rulesFor } from "../lib/catalog.js";
-import { useMode } from "../lib/mode.jsx";
 
 // line icons, one per rule (24px grid, stroked)
 const ICONS = {
@@ -61,9 +60,8 @@ export function Icon({ id, color }) {
 
 /** Every rule a token can carry, as a row of blocks. Each opens the launch form with it switched on. */
 export default function Blocks({ info }) {
-  const { mode, ponsV3 } = useMode();
   const blocks = [
-    ...rulesFor(info, mode, ponsV3).map((r) => ({ id: r.id, color: r.color, t: r.t, s: r.s })),
+    ...rulesFor(info).map((r) => ({ id: r.id, color: r.color, t: r.t, s: r.s })),
   ];
   return (
     <div className="blocks">

@@ -22,16 +22,3 @@ jobs:
       - run: node --test test/*.test.mjs
       - run: cd web && npm ci --no-audit --no-fund && npx vite build
 
-  contracts:
-    name: Robinhood Chain contracts
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: evm
-    steps:
-      - uses: actions/checkout@v4
-      - uses: foundry-rs/foundry-toolchain@v1
-      - run: forge install foundry-rs/forge-std OpenZeppelin/openzeppelin-contracts@v5.7.0 --no-git
-      - run: forge build --sizes
-      # the fork tests against live Pons need an RPC and are skipped here (RHC_RPC_URL unset)
-      - run: forge test

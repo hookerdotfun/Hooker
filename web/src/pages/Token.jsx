@@ -6,8 +6,6 @@ import { describeRules, duration, short, sol, usd, tokens } from "../lib/format.
 import Copy from "../lib/Copy.jsx";
 import Logo from "../components/Logo.jsx";
 import { parseWallets, fillList } from "../lib/lists.js";
-import TokenRhc from "./TokenRhc.jsx";
-import { useMode } from "../lib/mode.jsx";
 
 /** What the v3 rules that remember something show right now (GET /api/token/:mint `live`). */
 function LivePanel({ t }) {
@@ -211,16 +209,9 @@ function Phases({ t }) {
   );
 }
 
-/**
- * A 0x address is a Robinhood Chain launch (Pons); anything else is a Solana mint. Opening one moves the site's mode
- * to the token's chain, so a shared link always lands in the right experience.
- */
 export default function Token() {
   const { mint } = useParams();
-  const { setMode } = useMode();
-  const rhc = /^0x[0-9a-fA-F]{40}$/.test(mint);
-  useEffect(() => { setMode(rhc ? "pons" : "pumpfun"); }, [rhc, setMode]);
-  return rhc ? <TokenRhc key={mint} mint={mint} /> : <TokenSol key={mint} mint={mint} />;
+  return <TokenSol key={mint} mint={mint} />;
 }
 
 function TokenSol({ mint }) {

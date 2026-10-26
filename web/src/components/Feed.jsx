@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api.js";
-import { useMode, inMode } from "../lib/mode.jsx";
 
 // ── the live trades box (real chain data only; the old simulated feed is gone) ─────────────────────────
 
@@ -30,27 +29,24 @@ export function Row({ r }) {
  * Landed buys and sells, and refusals that landed as failed transactions, with the hook's reason.
  */
 const fmtSol = (s) => (s >= 1 ? s.toFixed(2) : s >= 0.01 ? s.toFixed(3) : s.toFixed(4));
-// a Robinhood Chain trade carries {amount, unit: "ETH"}; a Solana one {sol}
 const toRow = (t) => ({
   id: t.sig, ok: t.ok, who: t.who,
-  a: t.kind === "buy" ? `Buys $${t.symbol} for ${fmtSol(t.amount ?? t.sol)} ${t.unit ?? "SOL"}` : t.kind === "sell" ? `Sells $${t.symbol} for ${fmtSol(t.amount ?? t.sol)} ${t.unit ?? "SOL"}` : `A trade on $${t.symbol}`,
+  a: t.kind === "buy" ? `Buys $${t.symbol} for ${fmtSol(t.sol)} SOL` : t.kind === "sell" ? `Sells $${t.symbol} for ${fmtSol(t.sol)} SOL` : `A trade on $${t.symbol}`,
   why: t.ok ? null : t.why,
 });
 export function Feed() {
-  const { chain, venue } = useMode();
   const [data, setData] = useState(null);
   useEffect(() => {
     let live = true;
     setData(null);
-    const load = () => api.trades(chain).then((d) => { if (live) setData(d); }).catch(() => {});
+    const load = () => api.trades().then((d) => { if (live) setData(d); }).catch(() => {});
     load();
     const poll = () => { if (!document.hidden) load(); };
     const t = setInterval(poll, 10_000);
     document.addEventListener("visibilitychange", poll);
     return () => { live = false; clearInterval(t); document.removeEventListener("visibilitychange", poll); };
-  }, [chain]);
-  // an older API mixes both chains: keep this mode's rows either way
-  const rows = (data?.trades ?? []).filter((t) => inMode(t, chain)).map(toRow);
+  }, []);
+  const rows = (data?.trades ?? []).map(toRow);
   const refused = rows.filter((r) => !r.ok).length;
   return (
     <div className="feed">
@@ -60,7 +56,7 @@ export function Feed() {
       </div>
       <div className="feed-rows">
         {rows.map((r, i) => <Row key={`${r.id}:${i}`} r={r} />)}
-        {data && rows.length === 0 && <div className="feed-empty">{data.tokens ? "No trades on the live tokens yet. Each one shows up here as it lands." : `No ${venue} token is trading on Hooker right now. Every trade shows up here as it lands.`}</div>}
+        {data && rows.length === 0 && <div className="feed-empty">{data.tokens ? "No trades on the live tokens yet. Each one shows up here as it lands." : "No Pumpfun token is trading on Hooker right now. Every trade shows up here as it lands."}</div>}
         {!data && <div className="feed-empty">Reading the chain…</div>}
       </div>
     </div>

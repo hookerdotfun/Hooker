@@ -27,15 +27,17 @@ const refreshConfigs = async (g) => {
   return st;
 };
 const first = await refreshConfigs();
-const g = new Graduator({ conn, db, platform, treasury: env.treasury, hookProgram: env.hookProgram, configs: {}, dataDir: env.dataDir, burnWallet: env.burnWallet, log });
+// the burn needs both its wallet and the coin it buys; without a coin graduated coins name their own creator
+const burnOn = !!(env.burnWallet && env.hookerMint);
+const g = new Graduator({ conn, db, platform, treasury: env.treasury, hookProgram: env.hookProgram, configs: {}, dataDir: env.dataDir, burnWallet: burnOn ? env.burnWallet : null, log });
 // the burn (lib/flywheel.mjs): on when BURN_WALLET is set; live only when its key is here and FLYWHEEL_DRY is not set
 let flywheel = null;
-if (env.burnWallet) {
+if (burnOn) {
   const burnKey = existsSync(env.burnKeyPath) ? loadKeypair(env.burnKeyPath) : null;
   if (burnKey && !burnKey.publicKey.equals(env.burnWallet)) { console.error(`keys/burn.json is ${burnKey.publicKey.toBase58()}, BURN_WALLET is ${env.burnWallet.toBase58()}`); process.exit(1); }
   flywheel = createFlywheel({ conn, db, burn: env.flywheelDry ? null : burnKey, burnPubkey: env.burnWallet, hookerMint: env.hookerMint, platform: platform.publicKey, log });
   log(`burn: wallet ${env.burnWallet.toBase58()} → $HOOKER ${env.hookerMint.toBase58()} ${flywheel.dry ? "(DRY: simulated, nothing sent)" : "(live)"}`);
-} else log("burn: off (BURN_WALLET not set): graduated coins keep their creator as fee recipient");
+} else log("burn: off (BURN_WALLET or HOOKER_MINT not set): graduated coins keep their creator as fee recipient");
 await refreshConfigs(g);
 await g.ensureLut(); // pump.fun's fixed accounts, so a create+buy with a long URI still fits one transaction
 const CONFIGS_MS = Number(process.env.CONFIGS_MS ?? 600_000);

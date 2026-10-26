@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, NavLink, Route, Routes, useLocation, useNavigate, Navigate } from "react-router-dom";
+import { Link, NavLink, Route, Routes, useLocation, Navigate } from "react-router-dom";
+import { api } from "./lib/api.js";
 import { useWallet, WalletPicker } from "./lib/wallet.jsx";
 import { short } from "./lib/format.js";
-import { useMode } from "./lib/mode.jsx";
 import Home from "./pages/Home.jsx";
 import Launch from "./pages/Launch.jsx";
 import Token from "./pages/Token.jsx";
@@ -22,51 +22,23 @@ function XIcon({ size = 15 }) {
 
 /** The mark. The header shows it alone; the footer keeps the name next to it. */
 function Brand({ label = false }) {
-  const { logo } = useMode();
-  return <Link to="/" className="brand"><img src={logo} alt="Hooker" width="38" height="38" />{label && <span>Hooker</span>}</Link>;
-}
-
-/**
- * The mode switch: Pumpfun (Solana) or Pons (Robinhood Chain). Every page follows it. On a token page of the other
- * chain there is nothing to show in the new mode, so the switch moves to that mode's Explore.
- */
-function ModeSwitch({ className }) {
-  const { mode, setMode } = useMode();
-  const nav = useNavigate();
-  const { pathname } = useLocation();
-  const pick = (m) => {
-    if (m === mode) return;
-    setMode(m);
-    if (pathname.startsWith("/t/")) nav("/explore");
-  };
-  return (
-    <div className={`modesw ${className ?? ""}`} role="radiogroup" aria-label="Pumpfun or Pons">
-      <button type="button" role="radio" aria-checked={mode === "pumpfun"} className={mode === "pumpfun" ? "on" : ""} onClick={() => pick("pumpfun")}>
-        <span className="modesw-dot sol" />Pumpfun
-      </button>
-      <button type="button" role="radio" aria-checked={mode === "pons"} className={mode === "pons" ? "on" : ""} onClick={() => pick("pons")}>
-        <span className="modesw-dot rhc" />Pons
-      </button>
-    </div>
-  );
+  return <Link to="/" className="brand"><img src="/logo-v2-256.png" alt="Hooker" width="38" height="38" />{label && <span>Hooker</span>}</Link>;
 }
 
 function Nav({ className }) {
-  const { address, evmAddress } = useWallet();
-  const { pons } = useMode();
-  const mine = pons ? evmAddress : address;
+  const { address } = useWallet();
   return (
     <nav className={`navpills ${className ?? ""}`}>
       <NavLink to="/launch">Launch</NavLink>
       <NavLink to="/explore">Explore</NavLink>
       <NavLink to="/docs">Docs</NavLink>
-      {mine && <NavLink to="/me">My tokens</NavLink>}
+      {address && <NavLink to="/me">My tokens</NavLink>}
     </nav>
   );
 }
 
 /** The connected wallet, top right: a pill that opens a small menu (address with copy, My tokens, Sign out). */
-function WalletMenu({ address, evmAddress, disconnect, connect, pons }) {
+function WalletMenu({ address, disconnect }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const ref = useRef(null);
@@ -78,19 +50,15 @@ function WalletMenu({ address, evmAddress, disconnect, connect, pons }) {
     return () => { document.removeEventListener("pointerdown", away); window.removeEventListener("keydown", esc); };
   }, [open]);
   const copy = async (a) => { try { await navigator.clipboard.writeText(a); setCopied(a); setTimeout(() => setCopied(false), 1200); } catch {} };
-  const main = pons ? evmAddress ?? address : address ?? evmAddress;
   return (
     <div className="wmenu" ref={ref}>
       <button type="button" className={`wallet-pill ${open ? "open" : ""}`} onClick={() => setOpen((o) => !o)} aria-expanded={open}>
-        <span className="dot on" />{short(main)}
+        <span className="dot on" />{short(address)}
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="chev"><path d="m6 9 6 6 6-6" /></svg>
       </button>
       {open && (
         <div className="wmenu-pop" role="menu">
-          {address && <button type="button" className="wmenu-addr" onClick={() => copy(address)}><span className="wmenu-chain">Solana</span><span className="mono">{short(address)}</span><span className="wmenu-copy">{copied === address ? "Copied" : "Copy"}</span></button>}
-          {evmAddress && <button type="button" className="wmenu-addr" onClick={() => copy(evmAddress)}><span className="wmenu-chain">Robinhood</span><span className="mono">{short(evmAddress)}</span><span className="wmenu-copy">{copied === evmAddress ? "Copied" : "Copy"}</span></button>}
-          {!address && <button type="button" className="wmenu-item" onClick={() => { setOpen(false); connect("sol").catch(() => {}); }}>Add a Solana wallet</button>}
-          {!evmAddress && <button type="button" className="wmenu-item" onClick={() => { setOpen(false); connect("evm").catch(() => {}); }}>Add an EVM wallet</button>}
+          <button type="button" className="wmenu-addr" onClick={() => copy(address)}><span className="wmenu-chain">Solana</span><span className="mono">{short(address)}</span><span className="wmenu-copy">{copied === address ? "Copied" : "Copy"}</span></button>
           <Link to="/me" className="wmenu-item" onClick={() => setOpen(false)}>My tokens</Link>
           <button type="button" className="wmenu-item out" onClick={() => { setOpen(false); disconnect(); }}>Sign out</button>
         </div>
@@ -99,35 +67,27 @@ function WalletMenu({ address, evmAddress, disconnect, connect, pons }) {
   );
 }
 
-const FOOT = {
-  pumpfun: {
-    blurb: "Rules are built into the token itself through Solana Token-2022 transfer hooks. Every launch graduates into a normal Pumpfun coin.",
-    links: [["Program", "https://solscan.io/account/GE5TW1AFehhNFLYiSiaAkmbTjnHTB3hdhw6ZZFBP5sLV"], ["Pumpfun", "https://pump.fun"], ["Meteora", "https://www.meteora.ag"]],
-  },
-  pons: {
-    blurb: "Rules are built into the token contract itself on Robinhood Chain. Every launch graduates into a normal Pons coin.",
-    links: [["Launchpad", "https://robinhoodchain.blockscout.com/address/0xD2e757cCA670c439525336f7DD1E66E052840Da0"], ["Pons", "https://www.ponsfamily.com"], ["Robinhood Chain", "https://robinhoodchain.blockscout.com"]],
-  },
-};
+const FOOT_BLURB = "Rules are built into the token itself through Solana Token-2022 transfer hooks. Every launch graduates into a normal Pumpfun coin.";
 
 export default function App() {
-  const { address, evmAddress, connect, disconnect } = useWallet();
-  const { mode, pons, walletKind } = useMode();
-  const mine = pons ? evmAddress : address;
+  const { address, connect, disconnect } = useWallet();
   const { pathname } = useLocation();
+  // the hook program comes from GET /api/info; without it the footer leaves the link out
+  const [hookProgram, setHookProgram] = useState(null);
+  useEffect(() => { api.info().then((i) => setHookProgram(i?.hookProgram ?? null)).catch(() => {}); }, []);
   useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
   return (
     <>
       <div className="backdrop" />
       <div className="top-wrap">
         <header className="top">
-          <div className="top-left"><Brand /><ModeSwitch /></div>
+          <div className="top-left"><Brand /></div>
           <Nav />
           <div className="top-right">
             <a className="xbtn" href={X_URL} target="_blank" rel="noreferrer" aria-label="Hooker on X"><XIcon /></a>
-            {mine
-              ? <WalletMenu address={address} evmAddress={evmAddress} disconnect={disconnect} connect={connect} pons={pons} />
-              : <button className="btn small" onClick={() => { connect(walletKind).catch(() => {}); }}>Connect</button>}
+            {address
+              ? <WalletMenu address={address} disconnect={disconnect} />
+              : <button className="btn small" onClick={() => { connect().catch(() => {}); }}>Connect</button>}
           </div>
         </header>
         <Nav className="mobile-nav" />
@@ -149,18 +109,20 @@ export default function App() {
         <div className="pfoot">
           <div className="pfoot-brand">
             <Brand label />
-            <p>{FOOT[mode].blurb}</p>
+            <p>{FOOT_BLURB}</p>
           </div>
           <div className="pfoot-col">
             <h4>Site</h4>
             <Link to="/launch">Launch</Link>
             <Link to="/explore">Explore</Link>
             <Link to="/docs">Docs</Link>
-            {mine && <Link to="/me">My tokens</Link>}
+            {address && <Link to="/me">My tokens</Link>}
           </div>
           <div className="pfoot-col">
             <h4>On chain</h4>
-            {FOOT[mode].links.map(([t, u]) => <a key={t} href={u} target="_blank" rel="noreferrer">{t}</a>)}
+            {hookProgram && <a href={`https://solscan.io/account/${hookProgram}`} target="_blank" rel="noreferrer">Program</a>}
+            <a href="https://pump.fun" target="_blank" rel="noreferrer">Pumpfun</a>
+            <a href="https://www.meteora.ag" target="_blank" rel="noreferrer">Meteora</a>
           </div>
           <div className="pfoot-col">
             <h4>Elsewhere</h4>

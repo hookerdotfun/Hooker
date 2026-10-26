@@ -10,8 +10,6 @@ export const usd = (n) => {
   return `$${n.toFixed(0)}`;
 };
 export const pct = (bps) => `${(bps / 100).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`;
-/** a whole number of tokens (Robinhood Chain rules are reported in tokens, not base units) */
-const whole = (n) => Number(n).toLocaleString(undefined, { maximumFractionDigits: 0 });
 export const tokens = (units, decimals = 6) => (Number(units) / 10 ** decimals).toLocaleString(undefined, { maximumFractionDigits: 0 });
 export function duration(secs) {
   if (secs <= 0) return "0s";
@@ -22,9 +20,8 @@ export function duration(secs) {
 }
 
 /** The rules in plain words, in the order a trader cares about. */
-export function describeRules(r, { gradSol, noMigration = false, antiSnipe = false, antiSnipeStartPct = 50, fees = null, pair = null, chain = "sol", unit: unitIn = null } = {}) {
-  // Pons launches (Robinhood Chain) graduate into a Pons coin, in ETH or a Pons pair asset, and take the size fee and burn on every buy
-  const pons = chain === "rhc", coin = pons ? "Pons" : "Pumpfun", unit = unitIn ?? (pons ? "ETH" : "SOL");
+export function describeRules(r, { gradSol, noMigration = false, antiSnipe = false, antiSnipeStartPct = 50, fees = null, pair = null } = {}) {
+  const coin = "Pumpfun", unit = "SOL";
   if (!r) return [];
   const out = [];
   // the Pumpfun coin's custom pair (lib/pairs.mjs) and its Pumpfun creator fee
@@ -49,18 +46,18 @@ export function describeRules(r, { gradSol, noMigration = false, antiSnipe = fal
   }
   if (r.maxBuyBps > 0 || r.maxSellBps > 0) out.push({ t: "Anti-dump caps", d: [r.maxBuyBps > 0 && `One buy can take at most ${pct(r.maxBuyBps)} of supply.`, r.maxSellBps > 0 && `One sell can move at most ${pct(r.maxSellBps)}, the creator's included.`].filter(Boolean).join(" ") });
   if (r.sellBagBps > 0) out.push({ t: "Graduated sell caps", d: `Small holders can sell up to ${pct(r.sellSmallBps)} of supply at once. The bigger the bag, the smaller one sell can be, down to ${pct(r.sellFloorBps)} for wallets holding ${pct(r.sellBagBps)} or more. The creator too.` });
-  if (r.plagueDose > 0) out.push({ t: "Plague", d: `Nobody can simply buy it: a wallet can only buy once it holds at least ${pons ? whole(r.plagueDose) : tokens(r.plagueDose)} tokens, and the first tokens have to be sent by a holder. Selling is never restricted.` });
+  if (r.plagueDose > 0) out.push({ t: "Plague", d: `Nobody can simply buy it: a wallet can only buy once it holds at least ${tokens(r.plagueDose)} tokens, and the first tokens have to be sent by a holder. Selling is never restricted.` });
   if (r.dexOnly) out.push({ t: "DEX-only", d: "It only moves in trades with its curve. Wallet-to-wallet sends are refused, the creator's included." });
   if (r.p2pOnly) out.push({ t: "P2P-only", d: "Only the creator can buy from the curve, and nobody can sell to it. Everyone else gets tokens wallet to wallet." });
   if (r.potatoOn) out.push({ t: "Hot potato", d: `Whoever bought last cannot sell or send until a different wallet buys after them${r.potatoMinBps ? ` (with at least ${pct(r.potatoMinBps)} of supply)` : ""}${r.potatoColdSecs ? `, or nobody buys for ${duration(r.potatoColdSecs)}` : ""}. Nobody is exempt, the creator included.` });
   if (r.pingOn) out.push({ t: "Ping pong", d: `Buys and sells take turns, for everyone, the creator included. Trades under ${pct(r.pingMinBps)} of supply go through on their own turn without handing it over${r.pingFreeSecs ? `, and after ${duration(r.pingFreeSecs)} without a turn either side can go` : ""}. One transaction cannot take both turns.` });
-  if (r.chapterStartBps > 0) out.push({ t: "Chapters", d: `No wallet can hold more than ${pct(r.chapterStartBps)} of supply at first. The cap doubles every time another ${pons ? whole(r.chapterVolume) : tokens(r.chapterVolume)} tokens trade.` });
+  if (r.chapterStartBps > 0) out.push({ t: "Chapters", d: `No wallet can hold more than ${pct(r.chapterStartBps)} of supply at first. The cap doubles every time another ${tokens(r.chapterVolume)} tokens trade.` });
   if (r.oscKind === 1) out.push({ t: "Breathing cap", d: `The most one buy can take swings around ${pct(r.oscBaseBps)} of supply by ${r.oscAmpPct}% on a ${duration(r.oscPeriod)} cycle, never below ${pct(r.oscFloorBps)}. Sells are never capped.` });
   if (r.oscKind >= 2) out.push({ t: ["", "", "Momentum", "Resonance", "Coupled resonator"][r.oscKind], d: `The most one buy can take rests at ${pct(r.oscBaseBps)} of supply. Every buy kicks an oscillator with a ${duration(r.oscPeriod)} period${r.oscKind === 4 ? ` coupled ${r.oscCouplingPct}% to a second one` : ""}, so the cap swings up and back${r.oscKind === 3 ? ", furthest when buys land on its beat" : ""}, and settles at ${r.oscDampPermille / 10}% per second, never below ${pct(r.oscFloorBps)}. Sells are never capped.` });
-  if (r.kingOn) out.push({ t: "King of the Hill", d: `The biggest buy of at least ${pons ? `${Number(r.kingMin)} ${unit}` : sol(r.kingMinLamports / 1e9, 2)} holds the crown, and a challenger must beat it by ${r.kingBeatPct}% in one buy${r.kingDecayUnit ? `; the bar halves every ${r.kingDecayN} ${["", "minute", "hour", "day"][r.kingDecayUnit]}${r.kingDecayN === 1 ? "" : "s"}` : ""}. The King earns 0.3% of every trade's value while they reign, paid in ${pons ? unit : "SOL"} from Hooker's share of the fees. Selling or sending any tokens gives the crown up.${r.kingDevCan ? "" : " The creator cannot be King."}` });
+  if (r.kingOn) out.push({ t: "King of the Hill", d: `The biggest buy of at least ${sol(r.kingMinLamports / 1e9, 2)} holds the crown, and a challenger must beat it by ${r.kingBeatPct}% in one buy${r.kingDecayUnit ? `; the bar halves every ${r.kingDecayN} ${["", "minute", "hour", "day"][r.kingDecayUnit]}${r.kingDecayN === 1 ? "" : "s"}` : ""}. The King earns 0.3% of every trade's value while they reign, paid in SOL from Hooker's share of the fees. Selling or sending any tokens gives the crown up.${r.kingDevCan ? "" : " The creator cannot be King."}` });
   if (r.venueLock) out.push({ t: "Curve only", d: "It trades on its own curve. It can move between wallets, but no other pool or program can hold it." });
-  if (r.feeCapBps > 0) out.push({ t: "Size fee", d: `Each buy pays ${pct(r.feeBaseBps)} plus ${pct(r.feePerSolBps ?? r.feePerEthBps)} per ${unit}, up to ${pct(r.feeCapBps)}, taken in tokens ${pons ? "on every buy" : "at graduation"}.` });
-  if (r.burnBps > 0) out.push({ t: "Auto burn", d: pons ? `${pct(r.burnBps)} of every buy is burned.` : `${pct(r.burnBps)} of every buy is burned on the Pumpfun coin at graduation.` });
+  if (r.feeCapBps > 0) out.push({ t: "Size fee", d: `Each buy pays ${pct(r.feeBaseBps)} plus ${pct(r.feePerSolBps)} per ${unit}, up to ${pct(r.feeCapBps)}, taken in tokens at graduation.` });
+  if (r.burnBps > 0) out.push({ t: "Auto burn", d: `${pct(r.burnBps)} of every buy is burned on the Pumpfun coin at graduation.` });
   if (r.holderShareBps > 0) out.push({ t: "Holder share", d: `${pct(r.holderShareBps)} of the platform's remaining trading fees buy extra coins for holders, shared by how much they held and for how long.` });
   if (r.fomoOnly || r.appOnly || r.maxWalletBps > 0 || r.earlySecs > 0 || r.allowlist || r.blocklist || r.tradeGuardBps > 0 || r.snipeSecs > 0 || r.bundleMax > 0 || r.hoursOn
     || r.maxBuyBps > 0 || r.plagueDose > 0 || r.chapterStartBps > 0 || r.oscKind > 0)
@@ -83,7 +80,7 @@ export function ago(ts) {
 }
 
 /** Where a launch trades now, in a word. */
-export const venueLabel = (l) => (l.status === "trading" ? "Bonding" : l.status === "refunding" ? "Refunding" : l.venue === "pons" ? "Pons" : l.venue === "PumpSwap" ? "PumpSwap" : l.venue === "pump.fun" ? "Pumpfun" : "Graduating");
+export const venueLabel = (l) => (l.status === "trading" ? "Bonding" : l.status === "refunding" ? "Refunding" : l.venue === "PumpSwap" ? "PumpSwap" : l.venue === "pump.fun" ? "Pumpfun" : "Graduating");
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 export const hhmm = (min) => `${String(Math.floor(min / 60)).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
@@ -94,6 +91,3 @@ export function daysText(mask) {
   if (mask === 65) return "on weekends";
   return "on " + DAYS.filter((_, i) => mask & (1 << i)).join(", ");
 }
-export const eth = (n, d = 3) => (n == null ? "–" : `${Number(n).toLocaleString(undefined, { maximumFractionDigits: d })} ETH`);
-/** An amount in a named asset: 0.02 ETH, 150 USDG. */
-export const amt = (n, unit, d = 3) => (n == null ? "–" : `${Number(n).toLocaleString(undefined, { maximumFractionDigits: d })} ${unit}`);
